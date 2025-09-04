@@ -220,7 +220,7 @@ export default function AccountsReceivablePage() {
 
       // Query the new ar_aging_detail table
       const { data: arDetails, error } = await supabase
-        .from("public.ar_aging_detail")
+        .from("ar_aging_detail")
         .select("*")
         .gt("open_balance", 0) // Only records with outstanding balances
         .order("customer", { ascending: true })
