@@ -338,7 +338,8 @@ export default function CashFlowPage() {
       ),
     ).sort((a, b) => monthsList.indexOf(a) - monthsList.indexOf(b))
 
-    type ActivityMap = Record<string, number>
+    type ActivityInfo = { total: number; transactions: any[] }
+    type ActivityMap = Record<string, ActivityInfo>
     const breakdown: Record<
       string,
       { operating: ActivityMap; financing: ActivityMap; investing: ActivityMap; transfer: ActivityMap }
@@ -385,20 +386,44 @@ export default function CashFlowPage() {
       }
     })
 
-    const sheetData: (string | number | { f: string })[][] = []
+    const buildNote = (txs: any[]) =>
+      txs
+        .map(
+          (tx) =>
+            `${tx.date} - ${tx.memo || tx.description || ""} - ${(
+              tx.cashFlowImpact || 0
+            ).toFixed(2)}`,
+        )
+        .join("\n")
+
+    const sheetData: (string | number | { f: string } | { v: number; note?: string })[][] = []
     sheetData.push(["Account", ...months, "Total"])
 
-    const formatCell = (value: number | { f: string }) =>
+    const formatCell = (
+      value: number | { f: string } | { v: number; note?: string },
+    ) =>
       typeof value === "number"
         ? { v: value, t: "n", z: '"$"#,##0.00_);("$"#,##0.00)' }
-        : { t: "n", f: value.f, z: '"$"#,##0.00_);("$"#,##0.00)' }
+        : "f" in value
+        ? { t: "n", f: value.f, z: '"$"#,##0.00_);("$"#,##0.00)' }
+        : {
+            v: value.v,
+            t: "n",
+            z: '"$"#,##0.00_);("$"#,##0.00)',
+            c: value.note ? [{ t: value.note }] : undefined,
+          }
 
     const pushRow = (
       label: string,
-      values: (number | string | { f: string })[] = [],
+      values: (number | string | { f: string } | { v: number; note?: string })[] = [],
       computeTotal = true,
     ) => {
-      const row = [label, ...values.map((v) => (typeof v === "number" || (typeof v === "object" && "f" in v) ? formatCell(v as any) : v))]
+      const row = [
+        label,
+        ...values.map((v) =>
+          typeof v === "number" || typeof v === "object" ? formatCell(v as any) : v,
+        ),
+      ]
       if (computeTotal) {
         const rowIdx = sheetData.length + 1
         const start = columnLetter(2)
@@ -435,7 +460,12 @@ export default function CashFlowPage() {
     ;[...incomeOps, ...otherOps].forEach((acc) => {
       pushRow(
         `  ${acc}`,
-        months.map((m) => breakdown[m].operating[acc] || 0),
+        months.map((m) => {
+          const entry = breakdown[m].operating[acc]
+          return entry
+            ? { v: entry.total, note: buildNote(entry.transactions) }
+            : { v: 0 }
+        }),
       )
     })
     const opEnd = sheetData.length
@@ -458,7 +488,12 @@ export default function CashFlowPage() {
       .forEach((acc) => {
         pushRow(
           `  ${acc}`,
-          months.map((m) => breakdown[m].financing[acc] || 0),
+          months.map((m) => {
+            const entry = breakdown[m].financing[acc]
+            return entry
+              ? { v: entry.total, note: buildNote(entry.transactions) }
+              : { v: 0 }
+          }),
         )
       })
     const finEnd = sheetData.length
@@ -481,7 +516,12 @@ export default function CashFlowPage() {
       .forEach((acc) => {
         pushRow(
           `  ${acc}`,
-          months.map((m) => breakdown[m].investing[acc] || 0),
+          months.map((m) => {
+            const entry = breakdown[m].investing[acc]
+            return entry
+              ? { v: entry.total, note: buildNote(entry.transactions) }
+              : { v: 0 }
+          }),
         )
       })
     const invEnd = sheetData.length
@@ -505,7 +545,12 @@ export default function CashFlowPage() {
         .forEach((acc) => {
           pushRow(
             `  ${acc}`,
-            months.map((m) => breakdown[m].transfer[acc] || 0),
+            months.map((m) => {
+              const entry = breakdown[m].transfer[acc]
+              return entry
+                ? { v: entry.total, note: buildNote(entry.transactions) }
+                : { v: 0 }
+            }),
           )
         })
       const trEnd = sheetData.length
@@ -589,6 +634,7 @@ export default function CashFlowPage() {
         accountTypes[klass][account] = tx.account_type || ""
       }
     })
+
     const doc = new jsPDF()
     const tableColumn = ["Account", ...months, "Total"]
     const body: (string | number)[][] = []

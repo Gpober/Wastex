@@ -653,14 +653,54 @@ export default function FinancialsPage() {
         !acc.account_type?.toLowerCase().includes("cost of goods sold"),
     );
 
-    const sheetData: (string | number)[][] = [
+    const sheetData: (string | number | any)[][] = [
       ["Account", ...headers, "Total"],
     ];
 
+    const getCellTransactions = (
+      account: PLAccount,
+      header: string,
+    ) => {
+      if (viewMode === "Customer") {
+        return account.transactions.filter((tx) => tx.customer === header);
+      }
+      if (viewMode === "Detail") {
+        return account.transactions.filter(
+          (tx) => getMonthYear(tx.date) === header,
+        );
+      }
+      return account.transactions;
+    };
+
+    const buildNote = (transactions: any[]) =>
+      transactions
+        .map((tx) => {
+          const amount = tx.debit
+            ? Number.parseFloat(tx.debit.toString())
+            : Number.parseFloat(tx.credit?.toString() || "0") * -1;
+          return `${formatDateDisplay(tx.date)} - ${tx.memo || tx.description || ""} - ${amount.toFixed(
+            2,
+          )}`;
+        })
+        .join("\n");
+
     const buildRow = (acc: PLAccount) => {
-      const row: (string | number)[] = [acc.account];
-      headers.forEach((h) => row.push(getCellValue(acc, h)));
-      row.push(acc.amount);
+      const row: (string | number | any)[] = [acc.account];
+      headers.forEach((h) => {
+        const value = getCellValue(acc, h);
+        const note = buildNote(getCellTransactions(acc, h));
+        row.push(
+          note
+            ? { v: value, t: "n", c: [{ t: note }] }
+            : (value as number),
+        );
+      });
+      const totalNote = buildNote(acc.transactions);
+      row.push(
+        totalNote
+          ? { v: acc.amount, t: "n", c: [{ t: totalNote }] }
+          : acc.amount,
+      );
       return row;
     };
 
