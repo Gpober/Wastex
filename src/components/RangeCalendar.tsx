@@ -1,8 +1,15 @@
 "use client";
 
 import * as React from "react";
-import { addMonths, addYears, format, isAfter } from "date-fns";
-import type { DateRange } from "react-day-picker";
+import {
+  addMonths,
+  addYears,
+  format,
+  isAfter,
+  isBefore,
+  isSameDay,
+} from "date-fns";
+import type { DateRange, SelectRangeEventHandler } from "react-day-picker";
 
 import { Calendar } from "@/components/ui/calendar";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -32,7 +39,9 @@ const toUtcDate = (date: Date | null | undefined): Date | null => {
 };
 
 export default function RangeCalendar({ value, onChange }: RangeCalendarProps) {
-  const selected = React.useMemo<DateRange | undefined>(() => {
+  const [hoverDate, setHoverDate] = React.useState<Date | null>(null);
+
+  const normalizedRange = React.useMemo<DateRange | undefined>(() => {
     const start = toCalendarDate(value.start);
     const end = toCalendarDate(value.end);
 
@@ -47,30 +56,73 @@ export default function RangeCalendar({ value, onChange }: RangeCalendarProps) {
     return { from: start, to: end ?? start };
   }, [value.end, value.start]);
 
-  const handleSelect = React.useCallback(
-    (range: DateRange | undefined) => {
+  const displayRange = React.useMemo<DateRange | undefined>(() => {
+    if (value.start && !value.end && hoverDate) {
+      const start = toCalendarDate(value.start);
+      if (!start) return normalizedRange;
+
+      const hover = hoverDate;
+      if (isBefore(hover, start)) {
+        return { from: hover, to: start };
+      }
+      return { from: start, to: hover };
+    }
+
+    return normalizedRange;
+  }, [hoverDate, normalizedRange, value.end, value.start]);
+
+  React.useEffect(() => {
+    if (value.end || !value.start) {
+      setHoverDate(null);
+    }
+  }, [value.end, value.start]);
+
+  const handleSelect = React.useCallback<SelectRangeEventHandler>(
+    (range, selectedDay) => {
       if (!range?.from && !range?.to) {
         onChange({ start: null, end: null });
         return;
       }
 
-      let start = range?.from ?? range?.to ?? null;
-      let end = range?.to ?? range?.from ?? null;
-
-      if (start && end && isAfter(start, end)) {
-        [start, end] = [end, start];
+      const clicked = selectedDay ?? range?.to ?? range?.from ?? null;
+      if (!clicked) {
+        onChange({ start: null, end: null });
+        return;
       }
 
-      onChange({ start: toUtcDate(start), end: toUtcDate(end) });
+      const currentStart = toCalendarDate(value.start);
+      const currentEnd = toCalendarDate(value.end);
+
+      if (!currentStart || currentEnd) {
+        onChange({ start: toUtcDate(clicked), end: null });
+        return;
+      }
+
+      if (isBefore(clicked, currentStart)) {
+        onChange({
+          start: toUtcDate(clicked),
+          end: toUtcDate(currentStart),
+        });
+        return;
+      }
+
+      const endDate = isSameDay(clicked, currentStart)
+        ? currentStart
+        : clicked;
+
+      onChange({
+        start: value.start,
+        end: toUtcDate(endDate),
+      });
     },
-    [onChange]
+    [onChange, value.end, value.start]
   );
 
   const defaultMonth = React.useMemo(() => {
-    if (selected?.from) return selected.from;
-    if (selected?.to) return selected.to;
+    if (normalizedRange?.from) return normalizedRange.from;
+    if (normalizedRange?.to) return normalizedRange.to;
     return new Date();
-  }, [selected]);
+  }, [normalizedRange]);
 
   const [displayMonth, setDisplayMonth] = React.useState(defaultMonth);
 
@@ -123,10 +175,18 @@ export default function RangeCalendar({ value, onChange }: RangeCalendarProps) {
       </div>
       <Calendar
         mode="range"
-        selected={selected}
+        selected={displayRange}
         month={displayMonth}
         onMonthChange={handleMonthChange}
         onSelect={handleSelect}
+        onDayMouseEnter={(date) => {
+          if (!value.start || value.end) return;
+          setHoverDate(date ?? null);
+        }}
+        onDayMouseLeave={() => {
+          if (!value.start || value.end) return;
+          setHoverDate(null);
+        }}
         hideNavigation
         weekStartsOn={0}
         components={{
