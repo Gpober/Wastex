@@ -899,24 +899,21 @@ export default function FinancialOverviewPage() {
     };
   };
 
-  // Process cash flow transactions (same logic as cash-flow page)
+  // Process cash flow transactions (aligned with cash-flow page bank change logic)
   const processCashFlowTransactions = (transactions) => {
     let operatingCashFlow = 0;
     let financingCashFlow = 0;
     let investingCashFlow = 0;
 
     transactions.forEach((tx) => {
-      if (!tx.entry_bank_account) return; // Must have bank account source
+      const classification = classifyCashFlowTransaction(tx.account_type);
 
-      const classification = classifyCashFlowTransaction(
-        tx.account_type,
-        tx.report_category,
-      );
+      const debitValue = toNumber(tx.debit);
+      const creditValue = toNumber(tx.credit);
       const cashImpact =
-        tx.report_category === "transfer"
-          ? Number.parseFloat(tx.debit) - Number.parseFloat(tx.credit) // Reverse for transfers
-          : tx.normal_balance ||
-            Number.parseFloat(tx.credit) - Number.parseFloat(tx.debit); // Normal for others
+        classification === "financing" || classification === "investing"
+          ? debitValue - creditValue
+          : creditValue - debitValue;
 
       if (classification === "operating") {
         operatingCashFlow += cashImpact;
@@ -927,13 +924,40 @@ export default function FinancialOverviewPage() {
       }
     });
 
-    const netCashFlow =
-      operatingCashFlow + financingCashFlow + investingCashFlow;
+    const netCashFlow = transactions.reduce((total, tx) => {
+      const bankAccountRaw =
+        (tx.entry_bank_account ?? tx.cash_bank_account ?? "").toString();
+      const bankAccount = bankAccountRaw.trim();
+      if (!bankAccount) return total;
+
+      const hasCashFlag =
+        tx.is_cash_account === undefined ||
+        tx.is_cash_account === null ||
+        tx.is_cash_account === true ||
+        tx.is_cash_account === "true" ||
+        tx.is_cash_account === 1 ||
+        tx.is_cash_account === "1";
+      if (!hasCashFlag) return total;
+
+      const reportCategory = (tx.report_category ?? "")
+        .toString()
+        .toLowerCase();
+      if (reportCategory.includes("transfer")) {
+        return total;
+      }
+
+      const debit = toNumber(tx.debit);
+      const credit = toNumber(tx.credit);
+
+      return total + (debit - credit);
+    }, 0);
 
     return {
       operatingCashFlow,
       financingCashFlow,
       investingCashFlow,
+      classifiedNetCashFlow:
+        operatingCashFlow + financingCashFlow + investingCashFlow,
       netCashFlow,
     };
   };
@@ -1464,6 +1488,12 @@ export default function FinancialOverviewPage() {
 
   const formatPercentage = (value) => {
     return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
+  };
+
+  const toNumber = (value: unknown) => {
+    if (value === null || value === undefined || value === "") return 0;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
   };
 
   const formatDate = (dateString: string) => {
@@ -2009,16 +2039,22 @@ export default function FinancialOverviewPage() {
                       type="button"
                       aria-pressed={chartType === "line"}
                       className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
-                        chartType === "line" ? "" : TOGGLE_INACTIVE_CLASSES
+                        chartType === "line"
+                          ? TOGGLE_ACTIVE_CLASSES
+                          : TOGGLE_INACTIVE_CLASSES
                       }`}
                       onClick={() => setChartType("line")}
                     >
                       <TrendingUp
                         className={`h-4 w-4 ${
-                          chartType === "line" ? "" : "text-gray-700"
+                          chartType === "line" ? "text-white" : "text-gray-600"
                         }`}
                       />
-                      <span className={chartType === "line" ? "" : "text-gray-700"}>
+                      <span
+                        className={
+                          chartType === "line" ? "text-white" : "text-gray-700"
+                        }
+                      >
                         Line
                       </span>
                     </Button>
@@ -2026,16 +2062,22 @@ export default function FinancialOverviewPage() {
                       type="button"
                       aria-pressed={chartType === "bar"}
                       className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
-                        chartType === "bar" ? "" : TOGGLE_INACTIVE_CLASSES
+                        chartType === "bar"
+                          ? TOGGLE_ACTIVE_CLASSES
+                          : TOGGLE_INACTIVE_CLASSES
                       }`}
                       onClick={() => setChartType("bar")}
                     >
                       <BarChart3
                         className={`h-4 w-4 ${
-                          chartType === "bar" ? "" : "text-gray-700"
+                          chartType === "bar" ? "text-white" : "text-gray-600"
                         }`}
                       />
-                      <span className={chartType === "bar" ? "" : "text-gray-700"}>
+                      <span
+                        className={
+                          chartType === "bar" ? "text-white" : "text-gray-700"
+                        }
+                      >
                         Bar
                       </span>
                     </Button>
@@ -2147,14 +2189,16 @@ export default function FinancialOverviewPage() {
                           aria-pressed={propertyChartMetric === m.key}
                           className={`${TOGGLE_BASE_CLASSES} ${
                             propertyChartMetric === m.key
-                              ? ""
+                              ? TOGGLE_ACTIVE_CLASSES
                               : TOGGLE_INACTIVE_CLASSES
                           }`}
                           onClick={() => setPropertyChartMetric(m.key)}
                         >
                           <span
                             className={
-                              propertyChartMetric === m.key ? "" : "text-gray-700"
+                              propertyChartMetric === m.key
+                                ? "text-white"
+                                : "text-gray-700"
                             }
                           >
                             {m.label}
@@ -2168,18 +2212,24 @@ export default function FinancialOverviewPage() {
                         aria-pressed={customerChartType === "pie"}
                         className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
                           customerChartType === "pie"
-                            ? ""
+                            ? TOGGLE_ACTIVE_CLASSES
                             : TOGGLE_INACTIVE_CLASSES
                         }`}
                         onClick={() => setCustomerChartType("pie")}
                       >
                         <PieChart
                           className={`h-4 w-4 ${
-                            customerChartType === "pie" ? "" : "text-gray-700"
+                            customerChartType === "pie"
+                              ? "text-white"
+                              : "text-gray-600"
                           }`}
                         />
                         <span
-                          className={customerChartType === "pie" ? "" : "text-gray-700"}
+                          className={
+                            customerChartType === "pie"
+                              ? "text-white"
+                              : "text-gray-700"
+                          }
                         >
                           Pie
                         </span>
@@ -2189,18 +2239,24 @@ export default function FinancialOverviewPage() {
                         aria-pressed={customerChartType === "bar"}
                         className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
                           customerChartType === "bar"
-                            ? ""
+                            ? TOGGLE_ACTIVE_CLASSES
                             : TOGGLE_INACTIVE_CLASSES
                         }`}
                         onClick={() => setCustomerChartType("bar")}
                       >
                         <BarChart3
                           className={`h-4 w-4 ${
-                            customerChartType === "bar" ? "" : "text-gray-700"
+                            customerChartType === "bar"
+                              ? "text-white"
+                              : "text-gray-600"
                           }`}
                         />
                         <span
-                          className={customerChartType === "bar" ? "" : "text-gray-700"}
+                          className={
+                            customerChartType === "bar"
+                              ? "text-white"
+                              : "text-gray-700"
+                          }
                         >
                           Bar
                         </span>
