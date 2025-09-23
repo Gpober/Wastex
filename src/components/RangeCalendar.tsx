@@ -1,7 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { addMonths, addYears, format, isAfter } from "date-fns";
+import {
+  addMonths,
+  addYears,
+  format,
+  isAfter,
+  isBefore,
+} from "date-fns";
 import type { DateRange } from "react-day-picker";
 
 import { Calendar } from "@/components/ui/calendar";
@@ -32,7 +38,9 @@ const toUtcDate = (date: Date | null | undefined): Date | null => {
 };
 
 export default function RangeCalendar({ value, onChange }: RangeCalendarProps) {
-  const selected = React.useMemo<DateRange | undefined>(() => {
+  const [hoverDate, setHoverDate] = React.useState<Date | null>(null);
+
+  const normalizedRange = React.useMemo<DateRange | undefined>(() => {
     const start = toCalendarDate(value.start);
     const end = toCalendarDate(value.end);
 
@@ -47,6 +55,27 @@ export default function RangeCalendar({ value, onChange }: RangeCalendarProps) {
     return { from: start, to: end ?? start };
   }, [value.end, value.start]);
 
+  const displayRange = React.useMemo<DateRange | undefined>(() => {
+    if (value.start && !value.end && hoverDate) {
+      const start = toCalendarDate(value.start);
+      if (!start) return normalizedRange;
+
+      const hover = hoverDate;
+      if (isBefore(hover, start)) {
+        return { from: hover, to: start };
+      }
+      return { from: start, to: hover };
+    }
+
+    return normalizedRange;
+  }, [hoverDate, normalizedRange, value.end, value.start]);
+
+  React.useEffect(() => {
+    if (value.end || !value.start) {
+      setHoverDate(null);
+    }
+  }, [value.end, value.start]);
+
   const handleSelect = React.useCallback(
     (range: DateRange | undefined) => {
       if (!range?.from && !range?.to) {
@@ -54,11 +83,18 @@ export default function RangeCalendar({ value, onChange }: RangeCalendarProps) {
         return;
       }
 
-      let start = range?.from ?? range?.to ?? null;
-      let end = range?.to ?? range?.from ?? null;
+      let start: Date | null = null;
+      let end: Date | null = null;
 
-      if (start && end && isAfter(start, end)) {
-        [start, end] = [end, start];
+      if (range?.from && range?.to) {
+        start = range.from;
+        end = range.to;
+        if (isAfter(start, end)) {
+          [start, end] = [end, start];
+        }
+      } else {
+        start = range?.from ?? range?.to ?? null;
+        end = null;
       }
 
       onChange({ start: toUtcDate(start), end: toUtcDate(end) });
@@ -67,10 +103,10 @@ export default function RangeCalendar({ value, onChange }: RangeCalendarProps) {
   );
 
   const defaultMonth = React.useMemo(() => {
-    if (selected?.from) return selected.from;
-    if (selected?.to) return selected.to;
+    if (normalizedRange?.from) return normalizedRange.from;
+    if (normalizedRange?.to) return normalizedRange.to;
     return new Date();
-  }, [selected]);
+  }, [normalizedRange]);
 
   const [displayMonth, setDisplayMonth] = React.useState(defaultMonth);
 
@@ -123,10 +159,18 @@ export default function RangeCalendar({ value, onChange }: RangeCalendarProps) {
       </div>
       <Calendar
         mode="range"
-        selected={selected}
+        selected={displayRange}
         month={displayMonth}
         onMonthChange={handleMonthChange}
         onSelect={handleSelect}
+        onDayMouseEnter={(date) => {
+          if (!value.start || value.end) return;
+          setHoverDate(date ?? null);
+        }}
+        onDayMouseLeave={() => {
+          if (!value.start || value.end) return;
+          setHoverDate(null);
+        }}
         hideNavigation
         weekStartsOn={0}
         components={{

@@ -66,13 +66,13 @@ function Calendar({
         day_selected:
           "bg-[var(--primary)] text-white hover:bg-[var(--primary)] hover:text-white focus:bg-[var(--primary)] focus:text-white",
         day_today: "border border-[var(--primary)] text-[var(--primary)]",
-        day_outside: "day-outside text-muted-foreground opacity-40",
+        day_outside: "day-outside text-muted-foreground opacity-60",
         day_disabled: "text-muted-foreground opacity-30",
         day_range_start:
           "day-range-start bg-[var(--primary)] text-white rounded-l-md",
         day_range_end: "day-range-end bg-[var(--primary)] text-white rounded-r-md",
         day_range_middle:
-          "day-range-middle bg-[var(--primary)]/20 text-[var(--primary)]",
+          "day-range-middle bg-[var(--primary)] text-white",
         day_hidden: "invisible",
         ...classNames,
       }}
