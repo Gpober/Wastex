@@ -62,9 +62,12 @@ const CHART_COLORS = [
   "#82ca9d",
 ];
 
-const TOGGLE_BASE_CLASSES = "h-8 px-3 py-1.5 text-xs font-medium";
+const TOGGLE_BASE_CLASSES =
+  "h-9 px-4 text-sm font-semibold rounded-full transition-all duration-200 border";
+const TOGGLE_ACTIVE_CLASSES =
+  "bg-gradient-to-r from-[#56B6E9] to-[#2E86C1] text-white shadow-md border-transparent";
 const TOGGLE_INACTIVE_CLASSES =
-  "bg-white text-gray-700 border border-gray-300 hover:bg-gray-50";
+  "bg-white text-gray-600 border-gray-300 hover:border-[#56B6E9] hover:text-[#2E86C1]";
 
 // P&L Classification using the same logic as financials page
 const classifyPLAccount = (accountType, reportCategory, accountName) => {
@@ -365,41 +368,28 @@ export default function FinancialOverviewPage() {
     return dateOnly >= startDate && dateOnly <= endDate;
   };
 
-  // Calculate date range (matches financials page logic)
+  // Calculate date range (aligned with cash flow page)
   const calculateDateRange = () => {
+    const now = new Date();
     let startDate: string;
     let endDate: string;
 
     if (timePeriod === "Custom") {
-      startDate = customStartDate || "2025-01-01";
-      endDate = customEndDate || "2025-06-30";
+      const currentYear = new Date().getFullYear();
+      startDate = customStartDate || `${currentYear}-01-01`;
+      endDate = customEndDate || `${currentYear}-12-31`;
     } else if (timePeriod === "YTD") {
       const monthIndex = monthsList.indexOf(selectedMonth);
       const year = Number.parseInt(selectedYear);
       startDate = `${year}-01-01`;
-
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[monthIndex];
-      if (
-        monthIndex === 1 &&
-        ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
+      const lastDay = new Date(year, monthIndex + 1, 0).getDate();
       endDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
     } else if (timePeriod === "Monthly") {
       const monthIndex = monthsList.indexOf(selectedMonth);
       const year = Number.parseInt(selectedYear);
-      startDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
 
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[monthIndex];
-      if (
-        monthIndex === 1 &&
-        ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
+      startDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
+      const lastDay = new Date(year, monthIndex + 1, 0).getDate();
       endDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
     } else if (timePeriod === "Quarterly") {
       const monthIndex = monthsList.indexOf(selectedMonth);
@@ -407,16 +397,8 @@ export default function FinancialOverviewPage() {
       const quarter = Math.floor(monthIndex / 3);
       const quarterStartMonth = quarter * 3;
       startDate = `${year}-${String(quarterStartMonth + 1).padStart(2, "0")}-01`;
-
       const quarterEndMonth = quarterStartMonth + 2;
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[quarterEndMonth];
-      if (
-        quarterEndMonth === 1 &&
-        ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
+      const lastDay = new Date(year, quarterEndMonth + 1, 0).getDate();
       endDate = `${year}-${String(quarterEndMonth + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
     } else if (timePeriod === "Trailing 12") {
       const monthIndex = monthsList.indexOf(selectedMonth);
@@ -430,37 +412,13 @@ export default function FinancialOverviewPage() {
       }
       startDate = `${startYear}-${String(startMonth).padStart(2, "0")}-01`;
 
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[monthIndex];
-      if (
-        monthIndex === 1 &&
-        ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
+      const lastDay = new Date(year, monthIndex + 1, 0).getDate();
       endDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
     } else {
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const currentMonth = now.getMonth() + 1;
-      let startYear = currentYear;
-      let startMonth = currentMonth - 12;
-      if (startMonth <= 0) {
-        startMonth += 12;
-        startYear -= 1;
-      }
-      startDate = `${startYear}-${String(startMonth).padStart(2, "0")}-01`;
-
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[currentMonth - 1];
-      if (
-        currentMonth === 2 &&
-        ((currentYear % 4 === 0 && currentYear % 100 !== 0) ||
-          currentYear % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
-      endDate = `${currentYear}-${String(currentMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+      const twelveMonthsAgo = new Date(now);
+      twelveMonthsAgo.setMonth(now.getMonth() - 12);
+      startDate = twelveMonthsAgo.toISOString().split("T")[0];
+      endDate = now.toISOString().split("T")[0];
     }
 
     return { startDate, endDate };
@@ -2351,19 +2309,17 @@ export default function FinancialOverviewPage() {
                         <Button
                           key={key}
                           className={`${TOGGLE_BASE_CLASSES} ${
-                            summaryView === key ? "" : TOGGLE_INACTIVE_CLASSES
+                            summaryView === key
+                              ? TOGGLE_ACTIVE_CLASSES
+                              : TOGGLE_INACTIVE_CLASSES
                           }`}
                           onClick={() => setSummaryView(key)}
                         >
-                          <span
-                            className={summaryView === key ? "" : "text-gray-700"}
-                          >
-                            {key === "payroll"
-                              ? "Payroll"
-                              : key === "ar"
-                                ? "A/R"
-                                : "A/P"}
-                          </span>
+                          {key === "payroll"
+                            ? "Payroll"
+                            : key === "ar"
+                              ? "A/R"
+                              : "A/P"}
                         </Button>
                       ))}
                     </div>
