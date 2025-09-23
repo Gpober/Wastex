@@ -62,6 +62,10 @@ const CHART_COLORS = [
   "#82ca9d",
 ];
 
+const TOGGLE_BASE_CLASSES = "h-8 px-3 py-1.5 text-xs font-medium";
+const TOGGLE_INACTIVE_CLASSES =
+  "bg-white text-gray-700 border border-gray-300 hover:bg-gray-50";
+
 // P&L Classification using the same logic as financials page
 const classifyPLAccount = (accountType, reportCategory, accountName) => {
   const typeLower = accountType?.toLowerCase() || "";
@@ -272,6 +276,24 @@ export default function FinancialOverviewPage() {
   const [payrollSummary, setPayrollSummary] = useState<PayrollSummary | null>(null);
   const [payrollLoading, setPayrollLoading] = useState(false);
   const [payrollError, setPayrollError] = useState<string | null>(null);
+  type WorkingCapitalSummary = {
+    total: number;
+    current: number;
+    days30: number;
+    days60: number;
+    days90: number;
+    averageDays: number;
+    entityCount: number;
+    documentCount: number;
+  };
+  type SummaryView = "payroll" | "ar" | "ap";
+  const [summaryView, setSummaryView] = useState<SummaryView>("payroll");
+  const [arSummary, setArSummary] = useState<WorkingCapitalSummary | null>(null);
+  const [apSummary, setApSummary] = useState<WorkingCapitalSummary | null>(null);
+  const [arLoading, setArLoading] = useState(false);
+  const [apLoading, setApLoading] = useState(false);
+  const [arError, setArError] = useState<string | null>(null);
+  const [apError, setApError] = useState<string | null>(null);
   const [selectedCustomers, setSelectedCustomers] = useState<Set<string>>(
     new Set(["All Customers"]),
   );
@@ -1241,6 +1263,196 @@ export default function FinancialOverviewPage() {
     }
   };
 
+  const calculateDaysOutstanding = (dueDate?: string | null) => {
+    if (!dueDate) return 0;
+    try {
+      const { year, month, day } = getDateParts(dueDate);
+      if (!year || !month || !day) return 0;
+      const due = new Date(year, month - 1, day);
+      const today = new Date();
+      const diff = today.getTime() - due.getTime();
+      return Math.ceil(diff / (1000 * 60 * 60 * 24));
+    } catch (err) {
+      console.warn("Unable to parse due date", dueDate, err);
+      return 0;
+    }
+  };
+
+  type AgingBucketKey = "current" | "days30" | "days60" | "days90";
+
+  const getAgingBucketKey = (daysOutstanding: number): AgingBucketKey => {
+    if (daysOutstanding <= 30) return "current";
+    if (daysOutstanding <= 60) return "days30";
+    if (daysOutstanding <= 90) return "days60";
+    return "days90";
+  };
+
+  const fetchARSummary = async () => {
+    try {
+      setArLoading(true);
+      setArError(null);
+      const selected = Array.from(selectedCustomers).filter(
+        (c) => c !== "All Customers",
+      );
+      let query = supabase
+        .from("ar_aging_detail")
+        .select("id, customer, number, due_date, open_balance, amount");
+      if (selected.length > 0) {
+        query = query.in("customer", selected);
+      }
+      query = query.gt("open_balance", 0).order("customer", { ascending: true });
+      const { data, error } = await query;
+      if (error) throw error;
+      const rows = (data || []).filter(
+        (row) => Number(row?.open_balance) > 0,
+      );
+      if (!rows.length) {
+        setArSummary(null);
+        return;
+      }
+      let total = 0;
+      let current = 0;
+      let days30 = 0;
+      let days60 = 0;
+      let days90 = 0;
+      let weightedDaysTotal = 0;
+      const customers = new Set<string>();
+      const documents = new Set<string>();
+      rows.forEach((row: any) => {
+        const openBalance = Number(row.open_balance) || 0;
+        if (openBalance <= 0) return;
+        total += openBalance;
+        const customer = row.customer || "Unknown";
+        customers.add(customer);
+        const docId =
+          row.id ??
+          row.number ??
+          `${customer}-${row.due_date || ""}-${openBalance}`;
+        documents.add(String(docId));
+        const daysOutstanding = Math.max(
+          calculateDaysOutstanding(row.due_date),
+          0,
+        );
+        weightedDaysTotal += daysOutstanding * openBalance;
+        const bucket = getAgingBucketKey(daysOutstanding);
+        switch (bucket) {
+          case "current":
+            current += openBalance;
+            break;
+          case "days30":
+            days30 += openBalance;
+            break;
+          case "days60":
+            days60 += openBalance;
+            break;
+          case "days90":
+            days90 += openBalance;
+            break;
+        }
+      });
+      if (total === 0) {
+        setArSummary(null);
+        return;
+      }
+      setArSummary({
+        total,
+        current,
+        days30,
+        days60,
+        days90,
+        averageDays: total > 0 ? Math.round(weightedDaysTotal / total) : 0,
+        entityCount: customers.size,
+        documentCount: documents.size,
+      });
+    } catch (e) {
+      const err = e as Error;
+      setArError(err.message);
+      setArSummary(null);
+    } finally {
+      setArLoading(false);
+    }
+  };
+
+  const fetchAPSummary = async () => {
+    try {
+      setApLoading(true);
+      setApError(null);
+      const { data, error } = await supabase
+        .from("ap_aging")
+        .select("id, vendor, number, due_date, open_balance, amount")
+        .gt("open_balance", 0)
+        .order("vendor", { ascending: true });
+      if (error) throw error;
+      const rows = (data || []).filter(
+        (row) => Number(row?.open_balance) > 0,
+      );
+      if (!rows.length) {
+        setApSummary(null);
+        return;
+      }
+      let total = 0;
+      let current = 0;
+      let days30 = 0;
+      let days60 = 0;
+      let days90 = 0;
+      let weightedDaysTotal = 0;
+      const vendors = new Set<string>();
+      const documents = new Set<string>();
+      rows.forEach((row: any) => {
+        const openBalance = Number(row.open_balance) || 0;
+        if (openBalance <= 0) return;
+        total += openBalance;
+        const vendor = row.vendor || "Unknown";
+        vendors.add(vendor);
+        const docId =
+          row.id ??
+          row.number ??
+          `${vendor}-${row.due_date || ""}-${openBalance}`;
+        documents.add(String(docId));
+        const daysOutstanding = Math.max(
+          calculateDaysOutstanding(row.due_date),
+          0,
+        );
+        weightedDaysTotal += daysOutstanding * openBalance;
+        const bucket = getAgingBucketKey(daysOutstanding);
+        switch (bucket) {
+          case "current":
+            current += openBalance;
+            break;
+          case "days30":
+            days30 += openBalance;
+            break;
+          case "days60":
+            days60 += openBalance;
+            break;
+          case "days90":
+            days90 += openBalance;
+            break;
+        }
+      });
+      if (total === 0) {
+        setApSummary(null);
+        return;
+      }
+      setApSummary({
+        total,
+        current,
+        days30,
+        days60,
+        days90,
+        averageDays: total > 0 ? Math.round(weightedDaysTotal / total) : 0,
+        entityCount: vendors.size,
+        documentCount: documents.size,
+      });
+    } catch (e) {
+      const err = e as Error;
+      setApError(err.message);
+      setApSummary(null);
+    } finally {
+      setApLoading(false);
+    }
+  };
+
   const handleSync = async () => {
     try {
       await fetch("/api/sync", { method: "POST" });
@@ -1250,6 +1462,8 @@ export default function FinancialOverviewPage() {
       loadTrendData();
       loadPropertyData();
       fetchPayrollSummary();
+      fetchARSummary();
+      fetchAPSummary();
     }
   };
 
@@ -1260,6 +1474,8 @@ export default function FinancialOverviewPage() {
     loadTrendData();
     loadPropertyData();
     fetchPayrollSummary();
+    fetchARSummary();
+    fetchAPSummary();
   }, [
     timePeriod,
     selectedMonth,
@@ -1301,6 +1517,35 @@ export default function FinancialOverviewPage() {
       day: "numeric",
     });
   };
+
+  const workingCapitalState =
+    summaryView === "ar"
+      ? {
+          summary: arSummary,
+          loading: arLoading,
+          error: arError,
+          labels: {
+            total: "Total A/R",
+            document: "Open Invoices",
+            entity: "Customers",
+            avg: "Avg DSO",
+            view: "A/R",
+          },
+        }
+      : summaryView === "ap"
+        ? {
+            summary: apSummary,
+            loading: apLoading,
+            error: apError,
+            labels: {
+              total: "Total A/P",
+              document: "Open Bills",
+              entity: "Vendors",
+              avg: "Avg Days Outstanding",
+              view: "A/P",
+            },
+          }
+        : null;
 
   const propertyChartData = useMemo(() => {
     const key = {
@@ -1803,16 +2048,38 @@ export default function FinancialOverviewPage() {
                       label="Customer"
                     />
                     <Button
-                      className={`h-8 w-8 p-0 ${chartType === "line" ? "" : "bg-white text-gray-700 border border-gray-200"}`}
+                      type="button"
+                      aria-pressed={chartType === "line"}
+                      className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
+                        chartType === "line" ? "" : TOGGLE_INACTIVE_CLASSES
+                      }`}
                       onClick={() => setChartType("line")}
                     >
-                      <TrendingUp className="h-4 w-4" />
+                      <TrendingUp
+                        className={`h-4 w-4 ${
+                          chartType === "line" ? "" : "text-gray-700"
+                        }`}
+                      />
+                      <span className={chartType === "line" ? "" : "text-gray-700"}>
+                        Line
+                      </span>
                     </Button>
                     <Button
-                      className={`h-8 w-8 p-0 ${chartType === "bar" ? "" : "bg-white text-gray-700 border border-gray-200"}`}
+                      type="button"
+                      aria-pressed={chartType === "bar"}
+                      className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
+                        chartType === "bar" ? "" : TOGGLE_INACTIVE_CLASSES
+                      }`}
                       onClick={() => setChartType("bar")}
                     >
-                      <BarChart3 className="h-4 w-4" />
+                      <BarChart3
+                        className={`h-4 w-4 ${
+                          chartType === "bar" ? "" : "text-gray-700"
+                        }`}
+                      />
+                      <span className={chartType === "bar" ? "" : "text-gray-700"}>
+                        Bar
+                      </span>
                     </Button>
                   </div>
                 </CardHeader>
@@ -1918,37 +2185,67 @@ export default function FinancialOverviewPage() {
                       {metricOptions.map((m) => (
                         <Button
                           key={m.key}
-                          className={`h-8 px-2 text-xs ${
+                          type="button"
+                          aria-pressed={propertyChartMetric === m.key}
+                          className={`${TOGGLE_BASE_CLASSES} ${
                             propertyChartMetric === m.key
                               ? ""
-                              : "bg-white text-gray-700 border border-gray-200"
+                              : TOGGLE_INACTIVE_CLASSES
                           }`}
                           onClick={() => setPropertyChartMetric(m.key)}
                         >
-                          {m.label}
+                          <span
+                            className={
+                              propertyChartMetric === m.key ? "" : "text-gray-700"
+                            }
+                          >
+                            {m.label}
+                          </span>
                         </Button>
                       ))}
                     </div>
-                    <div className="flex gap-1">
+                    <div className="flex gap-2">
                       <Button
-                        className={`h-8 w-8 p-0 ${
+                        type="button"
+                        aria-pressed={customerChartType === "pie"}
+                        className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
                           customerChartType === "pie"
                             ? ""
-                            : "bg-white text-gray-700 border border-gray-200"
+                            : TOGGLE_INACTIVE_CLASSES
                         }`}
                         onClick={() => setCustomerChartType("pie")}
                       >
-                        <PieChart className="h-4 w-4" />
+                        <PieChart
+                          className={`h-4 w-4 ${
+                            customerChartType === "pie" ? "" : "text-gray-700"
+                          }`}
+                        />
+                        <span
+                          className={customerChartType === "pie" ? "" : "text-gray-700"}
+                        >
+                          Pie
+                        </span>
                       </Button>
                       <Button
-                        className={`h-8 w-8 p-0 ${
+                        type="button"
+                        aria-pressed={customerChartType === "bar"}
+                        className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
                           customerChartType === "bar"
                             ? ""
-                            : "bg-white text-gray-700 border border-gray-200"
+                            : TOGGLE_INACTIVE_CLASSES
                         }`}
                         onClick={() => setCustomerChartType("bar")}
                       >
-                        <BarChart3 className="h-4 w-4" />
+                        <BarChart3
+                          className={`h-4 w-4 ${
+                            customerChartType === "bar" ? "" : "text-gray-700"
+                          }`}
+                        />
+                        <span
+                          className={customerChartType === "bar" ? "" : "text-gray-700"}
+                        >
+                          Bar
+                        </span>
                       </Button>
                     </div>
                   </div>
@@ -2029,79 +2326,181 @@ export default function FinancialOverviewPage() {
 
             {/* Financial Health Summary */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Payroll Summary */}
+              {/* Payroll & Working Capital Summary */}
               <div className="bg-white rounded-lg shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-gray-200">
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    Payroll Summary
-                  </h3>
-                  <div className="text-sm text-gray-600 mt-1">
-                    Overview of payroll activity
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        {summaryView === "payroll"
+                          ? "Payroll Summary"
+                          : summaryView === "ar"
+                            ? "A/R Summary"
+                            : "A/P Summary"}
+                      </h3>
+                      <div className="text-sm text-gray-600 mt-1">
+                        {summaryView === "payroll"
+                          ? "Overview of payroll activity"
+                          : summaryView === "ar"
+                            ? "Snapshot of receivables aging"
+                            : "Snapshot of payables aging"}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {(["payroll", "ar", "ap"] as const).map((key) => (
+                        <Button
+                          key={key}
+                          className={`${TOGGLE_BASE_CLASSES} ${
+                            summaryView === key ? "" : TOGGLE_INACTIVE_CLASSES
+                          }`}
+                          onClick={() => setSummaryView(key)}
+                        >
+                          <span
+                            className={summaryView === key ? "" : "text-gray-700"}
+                          >
+                            {key === "payroll"
+                              ? "Payroll"
+                              : key === "ar"
+                                ? "A/R"
+                                : "A/P"}
+                          </span>
+                        </Button>
+                      ))}
+                    </div>
                   </div>
                 </div>
                 <div className="p-6">
-                  {payrollLoading ? (
-                    <div className="text-sm text-gray-500">Loading...</div>
-                  ) : payrollError ? (
-                    <div className="text-sm text-red-500">{payrollError}</div>
-                  ) : payrollSummary ? (
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <div className="text-gray-500">Employees Paid</div>
-                        <div className="text-lg font-semibold">
-                          {payrollSummary.employees}
+                  {summaryView === "payroll" ? (
+                    payrollLoading ? (
+                      <div className="text-sm text-gray-500">Loading...</div>
+                    ) : payrollError ? (
+                      <div className="text-sm text-red-500">{payrollError}</div>
+                    ) : payrollSummary ? (
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <div className="text-gray-500">Employees Paid</div>
+                          <div className="text-lg font-semibold">
+                            {payrollSummary.employees}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">W-2 Headcount</div>
+                          <div className="text-lg font-semibold">
+                            {payrollSummary.w2}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Contractor Headcount</div>
+                          <div className="text-lg font-semibold">
+                            {payrollSummary.contractors}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Net Pay</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(payrollSummary.netPay)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Gross Payroll</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(payrollSummary.grossPayroll)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Employer Taxes</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(payrollSummary.employerTaxes)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Benefits</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(payrollSummary.benefits)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Contractors</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(payrollSummary.contractorPayments)}
+                          </div>
                         </div>
                       </div>
-                      <div>
-                        <div className="text-gray-500">W-2 Headcount</div>
-                        <div className="text-lg font-semibold">
-                          {payrollSummary.w2}
+                    ) : (
+                      <div className="text-sm text-gray-500">No payroll data</div>
+                    )
+                  ) : workingCapitalState ? (
+                    workingCapitalState.loading ? (
+                      <div className="text-sm text-gray-500">Loading...</div>
+                    ) : workingCapitalState.error ? (
+                      <div className="text-sm text-red-500">
+                        {workingCapitalState.error}
+                      </div>
+                    ) : workingCapitalState.summary ? (
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <div className="text-gray-500">
+                            {workingCapitalState.labels.total}
+                          </div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(workingCapitalState.summary.total)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">
+                            {workingCapitalState.labels.document}
+                          </div>
+                          <div className="text-lg font-semibold">
+                            {workingCapitalState.summary.documentCount.toLocaleString()}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Current (0-30)</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(workingCapitalState.summary.current)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">31-60 Days</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(workingCapitalState.summary.days30)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">61-90 Days</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(workingCapitalState.summary.days60)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">90+ Days</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(workingCapitalState.summary.days90)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">
+                            {workingCapitalState.labels.entity}
+                          </div>
+                          <div className="text-lg font-semibold">
+                            {workingCapitalState.summary.entityCount.toLocaleString()}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">
+                            {workingCapitalState.labels.avg}
+                          </div>
+                          <div className="text-lg font-semibold">
+                            {workingCapitalState.summary.averageDays.toLocaleString()} days
+                          </div>
                         </div>
                       </div>
-                      <div>
-                        <div className="text-gray-500">
-                          Contractor Headcount
-                        </div>
-                        <div className="text-lg font-semibold">
-                          {payrollSummary.contractors}
-                        </div>
+                    ) : (
+                      <div className="text-sm text-gray-500">
+                        No {workingCapitalState.labels.view} data
                       </div>
-                      <div>
-                        <div className="text-gray-500">Net Pay</div>
-                        <div className="text-lg font-semibold">
-                          {formatCurrency(payrollSummary.netPay)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500">Gross Payroll</div>
-                        <div className="text-lg font-semibold">
-                          {formatCurrency(payrollSummary.grossPayroll)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500">Employer Taxes</div>
-                        <div className="text-lg font-semibold">
-                          {formatCurrency(payrollSummary.employerTaxes)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500">Benefits</div>
-                        <div className="text-lg font-semibold">
-                          {formatCurrency(payrollSummary.benefits)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500">Contractors</div>
-                        <div className="text-lg font-semibold">
-                          {formatCurrency(payrollSummary.contractorPayments)}
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-gray-500">
-                      No payroll data
-                    </div>
-                  )}
+                    )
+                  ) : null}
                 </div>
               </div>
 
