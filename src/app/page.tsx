@@ -62,9 +62,12 @@ const CHART_COLORS = [
   "#82ca9d",
 ];
 
-const TOGGLE_BASE_CLASSES = "h-8 px-3 py-1.5 text-xs font-medium";
+const TOGGLE_BASE_CLASSES =
+  "h-9 px-4 text-sm font-semibold rounded-full transition-all duration-200 border";
+const TOGGLE_ACTIVE_CLASSES =
+  "bg-gradient-to-r from-[#56B6E9] to-[#2E86C1] text-white shadow-md border-transparent";
 const TOGGLE_INACTIVE_CLASSES =
-  "bg-white text-gray-700 border border-gray-300 hover:bg-gray-50";
+  "bg-white text-gray-600 border-gray-300 hover:border-[#56B6E9] hover:text-[#2E86C1]";
 
 // P&L Classification using the same logic as financials page
 const classifyPLAccount = (accountType, reportCategory, accountName) => {
@@ -365,41 +368,28 @@ export default function FinancialOverviewPage() {
     return dateOnly >= startDate && dateOnly <= endDate;
   };
 
-  // Calculate date range (matches financials page logic)
+  // Calculate date range (aligned with cash flow page)
   const calculateDateRange = () => {
+    const now = new Date();
     let startDate: string;
     let endDate: string;
 
     if (timePeriod === "Custom") {
-      startDate = customStartDate || "2025-01-01";
-      endDate = customEndDate || "2025-06-30";
+      const currentYear = new Date().getFullYear();
+      startDate = customStartDate || `${currentYear}-01-01`;
+      endDate = customEndDate || `${currentYear}-12-31`;
     } else if (timePeriod === "YTD") {
       const monthIndex = monthsList.indexOf(selectedMonth);
       const year = Number.parseInt(selectedYear);
       startDate = `${year}-01-01`;
-
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[monthIndex];
-      if (
-        monthIndex === 1 &&
-        ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
+      const lastDay = new Date(year, monthIndex + 1, 0).getDate();
       endDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
     } else if (timePeriod === "Monthly") {
       const monthIndex = monthsList.indexOf(selectedMonth);
       const year = Number.parseInt(selectedYear);
-      startDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
 
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[monthIndex];
-      if (
-        monthIndex === 1 &&
-        ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
+      startDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
+      const lastDay = new Date(year, monthIndex + 1, 0).getDate();
       endDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
     } else if (timePeriod === "Quarterly") {
       const monthIndex = monthsList.indexOf(selectedMonth);
@@ -407,16 +397,8 @@ export default function FinancialOverviewPage() {
       const quarter = Math.floor(monthIndex / 3);
       const quarterStartMonth = quarter * 3;
       startDate = `${year}-${String(quarterStartMonth + 1).padStart(2, "0")}-01`;
-
       const quarterEndMonth = quarterStartMonth + 2;
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[quarterEndMonth];
-      if (
-        quarterEndMonth === 1 &&
-        ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
+      const lastDay = new Date(year, quarterEndMonth + 1, 0).getDate();
       endDate = `${year}-${String(quarterEndMonth + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
     } else if (timePeriod === "Trailing 12") {
       const monthIndex = monthsList.indexOf(selectedMonth);
@@ -430,37 +412,13 @@ export default function FinancialOverviewPage() {
       }
       startDate = `${startYear}-${String(startMonth).padStart(2, "0")}-01`;
 
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[monthIndex];
-      if (
-        monthIndex === 1 &&
-        ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
+      const lastDay = new Date(year, monthIndex + 1, 0).getDate();
       endDate = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
     } else {
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const currentMonth = now.getMonth() + 1;
-      let startYear = currentYear;
-      let startMonth = currentMonth - 12;
-      if (startMonth <= 0) {
-        startMonth += 12;
-        startYear -= 1;
-      }
-      startDate = `${startYear}-${String(startMonth).padStart(2, "0")}-01`;
-
-      const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      let lastDay = daysInMonth[currentMonth - 1];
-      if (
-        currentMonth === 2 &&
-        ((currentYear % 4 === 0 && currentYear % 100 !== 0) ||
-          currentYear % 400 === 0)
-      ) {
-        lastDay = 29;
-      }
-      endDate = `${currentYear}-${String(currentMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+      const twelveMonthsAgo = new Date(now);
+      twelveMonthsAgo.setMonth(now.getMonth() - 12);
+      startDate = twelveMonthsAgo.toISOString().split("T")[0];
+      endDate = now.toISOString().split("T")[0];
     }
 
     return { startDate, endDate };
@@ -941,24 +899,21 @@ export default function FinancialOverviewPage() {
     };
   };
 
-  // Process cash flow transactions (same logic as cash-flow page)
+  // Process cash flow transactions (aligned with cash-flow page bank change logic)
   const processCashFlowTransactions = (transactions) => {
     let operatingCashFlow = 0;
     let financingCashFlow = 0;
     let investingCashFlow = 0;
 
     transactions.forEach((tx) => {
-      if (!tx.entry_bank_account) return; // Must have bank account source
+      const classification = classifyCashFlowTransaction(tx.account_type);
 
-      const classification = classifyCashFlowTransaction(
-        tx.account_type,
-        tx.report_category,
-      );
+      const debitValue = toNumber(tx.debit);
+      const creditValue = toNumber(tx.credit);
       const cashImpact =
-        tx.report_category === "transfer"
-          ? Number.parseFloat(tx.debit) - Number.parseFloat(tx.credit) // Reverse for transfers
-          : tx.normal_balance ||
-            Number.parseFloat(tx.credit) - Number.parseFloat(tx.debit); // Normal for others
+        classification === "financing" || classification === "investing"
+          ? debitValue - creditValue
+          : creditValue - debitValue;
 
       if (classification === "operating") {
         operatingCashFlow += cashImpact;
@@ -969,13 +924,40 @@ export default function FinancialOverviewPage() {
       }
     });
 
-    const netCashFlow =
-      operatingCashFlow + financingCashFlow + investingCashFlow;
+    const netCashFlow = transactions.reduce((total, tx) => {
+      const bankAccountRaw =
+        (tx.entry_bank_account ?? tx.cash_bank_account ?? "").toString();
+      const bankAccount = bankAccountRaw.trim();
+      if (!bankAccount) return total;
+
+      const hasCashFlag =
+        tx.is_cash_account === undefined ||
+        tx.is_cash_account === null ||
+        tx.is_cash_account === true ||
+        tx.is_cash_account === "true" ||
+        tx.is_cash_account === 1 ||
+        tx.is_cash_account === "1";
+      if (!hasCashFlag) return total;
+
+      const reportCategory = (tx.report_category ?? "")
+        .toString()
+        .toLowerCase();
+      if (reportCategory.includes("transfer")) {
+        return total;
+      }
+
+      const debit = toNumber(tx.debit);
+      const credit = toNumber(tx.credit);
+
+      return total + (debit - credit);
+    }, 0);
 
     return {
       operatingCashFlow,
       financingCashFlow,
       investingCashFlow,
+      classifiedNetCashFlow:
+        operatingCashFlow + financingCashFlow + investingCashFlow,
       netCashFlow,
     };
   };
@@ -1506,6 +1488,12 @@ export default function FinancialOverviewPage() {
 
   const formatPercentage = (value) => {
     return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
+  };
+
+  const toNumber = (value: unknown) => {
+    if (value === null || value === undefined || value === "") return 0;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
   };
 
   const formatDate = (dateString: string) => {
@@ -2051,16 +2039,22 @@ export default function FinancialOverviewPage() {
                       type="button"
                       aria-pressed={chartType === "line"}
                       className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
-                        chartType === "line" ? "" : TOGGLE_INACTIVE_CLASSES
+                        chartType === "line"
+                          ? TOGGLE_ACTIVE_CLASSES
+                          : TOGGLE_INACTIVE_CLASSES
                       }`}
                       onClick={() => setChartType("line")}
                     >
                       <TrendingUp
                         className={`h-4 w-4 ${
-                          chartType === "line" ? "" : "text-gray-700"
+                          chartType === "line" ? "text-white" : "text-gray-600"
                         }`}
                       />
-                      <span className={chartType === "line" ? "" : "text-gray-700"}>
+                      <span
+                        className={
+                          chartType === "line" ? "text-white" : "text-gray-700"
+                        }
+                      >
                         Line
                       </span>
                     </Button>
@@ -2068,16 +2062,22 @@ export default function FinancialOverviewPage() {
                       type="button"
                       aria-pressed={chartType === "bar"}
                       className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
-                        chartType === "bar" ? "" : TOGGLE_INACTIVE_CLASSES
+                        chartType === "bar"
+                          ? TOGGLE_ACTIVE_CLASSES
+                          : TOGGLE_INACTIVE_CLASSES
                       }`}
                       onClick={() => setChartType("bar")}
                     >
                       <BarChart3
                         className={`h-4 w-4 ${
-                          chartType === "bar" ? "" : "text-gray-700"
+                          chartType === "bar" ? "text-white" : "text-gray-600"
                         }`}
                       />
-                      <span className={chartType === "bar" ? "" : "text-gray-700"}>
+                      <span
+                        className={
+                          chartType === "bar" ? "text-white" : "text-gray-700"
+                        }
+                      >
                         Bar
                       </span>
                     </Button>
@@ -2189,14 +2189,16 @@ export default function FinancialOverviewPage() {
                           aria-pressed={propertyChartMetric === m.key}
                           className={`${TOGGLE_BASE_CLASSES} ${
                             propertyChartMetric === m.key
-                              ? ""
+                              ? TOGGLE_ACTIVE_CLASSES
                               : TOGGLE_INACTIVE_CLASSES
                           }`}
                           onClick={() => setPropertyChartMetric(m.key)}
                         >
                           <span
                             className={
-                              propertyChartMetric === m.key ? "" : "text-gray-700"
+                              propertyChartMetric === m.key
+                                ? "text-white"
+                                : "text-gray-700"
                             }
                           >
                             {m.label}
@@ -2210,18 +2212,24 @@ export default function FinancialOverviewPage() {
                         aria-pressed={customerChartType === "pie"}
                         className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
                           customerChartType === "pie"
-                            ? ""
+                            ? TOGGLE_ACTIVE_CLASSES
                             : TOGGLE_INACTIVE_CLASSES
                         }`}
                         onClick={() => setCustomerChartType("pie")}
                       >
                         <PieChart
                           className={`h-4 w-4 ${
-                            customerChartType === "pie" ? "" : "text-gray-700"
+                            customerChartType === "pie"
+                              ? "text-white"
+                              : "text-gray-600"
                           }`}
                         />
                         <span
-                          className={customerChartType === "pie" ? "" : "text-gray-700"}
+                          className={
+                            customerChartType === "pie"
+                              ? "text-white"
+                              : "text-gray-700"
+                          }
                         >
                           Pie
                         </span>
@@ -2231,18 +2239,24 @@ export default function FinancialOverviewPage() {
                         aria-pressed={customerChartType === "bar"}
                         className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
                           customerChartType === "bar"
-                            ? ""
+                            ? TOGGLE_ACTIVE_CLASSES
                             : TOGGLE_INACTIVE_CLASSES
                         }`}
                         onClick={() => setCustomerChartType("bar")}
                       >
                         <BarChart3
                           className={`h-4 w-4 ${
-                            customerChartType === "bar" ? "" : "text-gray-700"
+                            customerChartType === "bar"
+                              ? "text-white"
+                              : "text-gray-600"
                           }`}
                         />
                         <span
-                          className={customerChartType === "bar" ? "" : "text-gray-700"}
+                          className={
+                            customerChartType === "bar"
+                              ? "text-white"
+                              : "text-gray-700"
+                          }
                         >
                           Bar
                         </span>
@@ -2351,19 +2365,17 @@ export default function FinancialOverviewPage() {
                         <Button
                           key={key}
                           className={`${TOGGLE_BASE_CLASSES} ${
-                            summaryView === key ? "" : TOGGLE_INACTIVE_CLASSES
+                            summaryView === key
+                              ? TOGGLE_ACTIVE_CLASSES
+                              : TOGGLE_INACTIVE_CLASSES
                           }`}
                           onClick={() => setSummaryView(key)}
                         >
-                          <span
-                            className={summaryView === key ? "" : "text-gray-700"}
-                          >
-                            {key === "payroll"
-                              ? "Payroll"
-                              : key === "ar"
-                                ? "A/R"
-                                : "A/P"}
-                          </span>
+                          {key === "payroll"
+                            ? "Payroll"
+                            : key === "ar"
+                              ? "A/R"
+                              : "A/P"}
                         </Button>
                       ))}
                     </div>
