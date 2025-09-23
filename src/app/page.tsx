@@ -62,6 +62,10 @@ const CHART_COLORS = [
   "#82ca9d",
 ];
 
+const TOGGLE_BASE_CLASSES = "h-8 px-3 py-1.5 text-xs font-medium";
+const TOGGLE_INACTIVE_CLASSES =
+  "bg-white text-gray-700 border border-gray-300 hover:bg-gray-50";
+
 // P&L Classification using the same logic as financials page
 const classifyPLAccount = (accountType, reportCategory, accountName) => {
   const typeLower = accountType?.toLowerCase() || "";
@@ -2044,16 +2048,38 @@ export default function FinancialOverviewPage() {
                       label="Customer"
                     />
                     <Button
-                      className={`h-8 w-8 p-0 ${chartType === "line" ? "" : "bg-white text-gray-700 border border-gray-200"}`}
+                      type="button"
+                      aria-pressed={chartType === "line"}
+                      className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
+                        chartType === "line" ? "" : TOGGLE_INACTIVE_CLASSES
+                      }`}
                       onClick={() => setChartType("line")}
                     >
-                      <TrendingUp className="h-4 w-4" />
+                      <TrendingUp
+                        className={`h-4 w-4 ${
+                          chartType === "line" ? "" : "text-gray-700"
+                        }`}
+                      />
+                      <span className={chartType === "line" ? "" : "text-gray-700"}>
+                        Line
+                      </span>
                     </Button>
                     <Button
-                      className={`h-8 w-8 p-0 ${chartType === "bar" ? "" : "bg-white text-gray-700 border border-gray-200"}`}
+                      type="button"
+                      aria-pressed={chartType === "bar"}
+                      className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
+                        chartType === "bar" ? "" : TOGGLE_INACTIVE_CLASSES
+                      }`}
                       onClick={() => setChartType("bar")}
                     >
-                      <BarChart3 className="h-4 w-4" />
+                      <BarChart3
+                        className={`h-4 w-4 ${
+                          chartType === "bar" ? "" : "text-gray-700"
+                        }`}
+                      />
+                      <span className={chartType === "bar" ? "" : "text-gray-700"}>
+                        Bar
+                      </span>
                     </Button>
                   </div>
                 </CardHeader>
@@ -2159,37 +2185,67 @@ export default function FinancialOverviewPage() {
                       {metricOptions.map((m) => (
                         <Button
                           key={m.key}
-                          className={`h-8 px-2 text-xs ${
+                          type="button"
+                          aria-pressed={propertyChartMetric === m.key}
+                          className={`${TOGGLE_BASE_CLASSES} ${
                             propertyChartMetric === m.key
                               ? ""
-                              : "bg-white text-gray-700 border border-gray-200"
+                              : TOGGLE_INACTIVE_CLASSES
                           }`}
                           onClick={() => setPropertyChartMetric(m.key)}
                         >
-                          {m.label}
+                          <span
+                            className={
+                              propertyChartMetric === m.key ? "" : "text-gray-700"
+                            }
+                          >
+                            {m.label}
+                          </span>
                         </Button>
                       ))}
                     </div>
-                    <div className="flex gap-1">
+                    <div className="flex gap-2">
                       <Button
-                        className={`h-8 w-8 p-0 ${
+                        type="button"
+                        aria-pressed={customerChartType === "pie"}
+                        className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
                           customerChartType === "pie"
                             ? ""
-                            : "bg-white text-gray-700 border border-gray-200"
+                            : TOGGLE_INACTIVE_CLASSES
                         }`}
                         onClick={() => setCustomerChartType("pie")}
                       >
-                        <PieChart className="h-4 w-4" />
+                        <PieChart
+                          className={`h-4 w-4 ${
+                            customerChartType === "pie" ? "" : "text-gray-700"
+                          }`}
+                        />
+                        <span
+                          className={customerChartType === "pie" ? "" : "text-gray-700"}
+                        >
+                          Pie
+                        </span>
                       </Button>
                       <Button
-                        className={`h-8 w-8 p-0 ${
+                        type="button"
+                        aria-pressed={customerChartType === "bar"}
+                        className={`${TOGGLE_BASE_CLASSES} flex items-center gap-1 ${
                           customerChartType === "bar"
                             ? ""
-                            : "bg-white text-gray-700 border border-gray-200"
+                            : TOGGLE_INACTIVE_CLASSES
                         }`}
                         onClick={() => setCustomerChartType("bar")}
                       >
-                        <BarChart3 className="h-4 w-4" />
+                        <BarChart3
+                          className={`h-4 w-4 ${
+                            customerChartType === "bar" ? "" : "text-gray-700"
+                          }`}
+                        />
+                        <span
+                          className={customerChartType === "bar" ? "" : "text-gray-700"}
+                        >
+                          Bar
+                        </span>
                       </Button>
                     </div>
                   </div>
@@ -2294,20 +2350,20 @@ export default function FinancialOverviewPage() {
                       {(["payroll", "ar", "ap"] as const).map((key) => (
                         <Button
                           key={key}
-                          size="sm"
-                          variant={summaryView === key ? "default" : "outline"}
-                          className={
-                            summaryView === key
-                              ? ""
-                              : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
-                          }
+                          className={`${TOGGLE_BASE_CLASSES} ${
+                            summaryView === key ? "" : TOGGLE_INACTIVE_CLASSES
+                          }`}
                           onClick={() => setSummaryView(key)}
                         >
-                          {key === "payroll"
-                            ? "Payroll"
-                            : key === "ar"
-                              ? "A/R"
-                              : "A/P"}
+                          <span
+                            className={summaryView === key ? "" : "text-gray-700"}
+                          >
+                            {key === "payroll"
+                              ? "Payroll"
+                              : key === "ar"
+                                ? "A/R"
+                                : "A/P"}
+                          </span>
                         </Button>
                       ))}
                     </div>
