@@ -7,8 +7,9 @@ import {
   format,
   isAfter,
   isBefore,
+  isSameDay,
 } from "date-fns";
-import type { DateRange } from "react-day-picker";
+import type { DateRange, SelectRangeEventHandler } from "react-day-picker";
 
 import { Calendar } from "@/components/ui/calendar";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -76,30 +77,45 @@ export default function RangeCalendar({ value, onChange }: RangeCalendarProps) {
     }
   }, [value.end, value.start]);
 
-  const handleSelect = React.useCallback(
-    (range: DateRange | undefined) => {
+  const handleSelect = React.useCallback<SelectRangeEventHandler>(
+    (range, selectedDay) => {
       if (!range?.from && !range?.to) {
         onChange({ start: null, end: null });
         return;
       }
 
-      let start: Date | null = null;
-      let end: Date | null = null;
-
-      if (range?.from && range?.to) {
-        start = range.from;
-        end = range.to;
-        if (isAfter(start, end)) {
-          [start, end] = [end, start];
-        }
-      } else {
-        start = range?.from ?? range?.to ?? null;
-        end = null;
+      const clicked = selectedDay ?? range?.to ?? range?.from ?? null;
+      if (!clicked) {
+        onChange({ start: null, end: null });
+        return;
       }
 
-      onChange({ start: toUtcDate(start), end: toUtcDate(end) });
+      const currentStart = toCalendarDate(value.start);
+      const currentEnd = toCalendarDate(value.end);
+
+      if (!currentStart || currentEnd) {
+        onChange({ start: toUtcDate(clicked), end: null });
+        return;
+      }
+
+      if (isBefore(clicked, currentStart)) {
+        onChange({
+          start: toUtcDate(clicked),
+          end: toUtcDate(currentStart),
+        });
+        return;
+      }
+
+      const endDate = isSameDay(clicked, currentStart)
+        ? currentStart
+        : clicked;
+
+      onChange({
+        start: value.start,
+        end: toUtcDate(endDate),
+      });
     },
-    [onChange]
+    [onChange, value.end, value.start]
   );
 
   const defaultMonth = React.useMemo(() => {
