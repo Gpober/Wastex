@@ -6,21 +6,46 @@ import {
   useMemo,
   useCallback,
   useRef,
+  type ChangeEvent,
 } from "react";
 import {
   Menu,
   X,
   ChevronLeft,
+  ChevronRight,
   TrendingUp,
   Award,
   AlertTriangle,
+  AlertCircle,
   CheckCircle,
   Target,
   Mic,
   Bot,
   MessageCircle,
+  Factory,
+  PlusCircle,
+  Camera,
+  Image as ImageIcon,
+  Upload,
+  RefreshCcw,
   type LucideIcon,
 } from "lucide-react";
+
+import {
+  endOfMonth,
+  endOfQuarter,
+  endOfWeek,
+  endOfYear,
+  format,
+  getQuarter,
+  isSameDay,
+  isWithinInterval,
+  parseISO,
+  startOfMonth,
+  startOfQuarter,
+  startOfWeek,
+  subMonths,
+} from "date-fns";
 
 import { supabase } from "@/lib/supabaseClient";
 
@@ -145,6 +170,111 @@ const getAgingColor = (days: number) => {
   return BRAND_COLORS.danger;
 };
 
+const parseDateValue = (value: string) => {
+  if (!value) return new Date();
+  const iso = value.includes("T") ? value : `${value}T00:00:00`;
+  return parseISO(iso);
+};
+
+const normalizeDate = (date: Date) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+const getProductionPeriodRange = (
+  period: ProductionPeriod,
+  options: {
+    customStart?: string;
+    customEnd?: string;
+    dailyDate?: string;
+    weeklyDate?: string;
+    monthlyMonth?: number;
+    monthlyYear?: number;
+    quarter?: number;
+    quarterYear?: number;
+    ytdYear?: number;
+    trailingMonth?: number;
+    trailingYear?: number;
+  } = {},
+): { start: Date; end: Date } | null => {
+  const today = normalizeDate(new Date());
+  const {
+    customStart,
+    customEnd,
+    dailyDate,
+    weeklyDate,
+    monthlyMonth,
+    monthlyYear,
+    quarter,
+    quarterYear,
+    ytdYear,
+    trailingMonth,
+    trailingYear,
+  } = options;
+
+  switch (period) {
+    case "Daily": {
+      const target = dailyDate ? normalizeDate(parseDateValue(dailyDate)) : today;
+      return { start: target, end: target };
+    }
+    case "Weekly": {
+      const anchor = weeklyDate ? normalizeDate(parseDateValue(weeklyDate)) : today;
+      const start = normalizeDate(startOfWeek(anchor, { weekStartsOn: 1 }));
+      const end = normalizeDate(endOfWeek(anchor, { weekStartsOn: 1 }));
+      return { start, end };
+    }
+    case "Monthly": {
+      const month = typeof monthlyMonth === "number" ? monthlyMonth : today.getMonth();
+      const year = typeof monthlyYear === "number" ? monthlyYear : today.getFullYear();
+      const anchor = new Date(year, month, 1);
+      const start = normalizeDate(startOfMonth(anchor));
+      const end = normalizeDate(endOfMonth(anchor));
+      return { start, end };
+    }
+    case "Year to Date": {
+      const currentYear = today.getFullYear();
+      const year = typeof ytdYear === "number" ? ytdYear : currentYear;
+      const start = normalizeDate(new Date(year, 0, 1));
+      const end =
+        year === currentYear
+          ? today
+          : normalizeDate(endOfYear(new Date(year, 0, 1)));
+      return { start, end };
+    }
+    case "Trailing 12 Months": {
+      const month = typeof trailingMonth === "number" ? trailingMonth : today.getMonth();
+      const year = typeof trailingYear === "number" ? trailingYear : today.getFullYear();
+      const anchor = new Date(year, month, 1);
+      const end = normalizeDate(endOfMonth(anchor));
+      const start = normalizeDate(startOfMonth(subMonths(end, 11)));
+      return { start, end };
+    }
+    case "Quarterly": {
+      const baseQuarter = quarter ?? getQuarter(today);
+      const year = typeof quarterYear === "number" ? quarterYear : today.getFullYear();
+      const anchor = new Date(year, (baseQuarter - 1) * 3, 1);
+      const start = normalizeDate(startOfQuarter(anchor));
+      const end = normalizeDate(endOfQuarter(anchor));
+      return { start, end };
+    }
+    case "Custom": {
+      if (!customStart || !customEnd) return null;
+      const start = normalizeDate(parseDateValue(customStart));
+      const end = normalizeDate(parseDateValue(customEnd));
+      if (start > end) {
+        return { start: end, end: start };
+      }
+      return { start, end };
+    }
+    default:
+      return { start: today, end: today };
+  }
+};
+
+const formatTonnage = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(value);
+
 type Insight = {
   title: string;
   message: string;
@@ -171,6 +301,86 @@ type RankingMetric =
   | "payrollDept"
   | "payrollEmployee";
 
+type ProductionPeriod =
+  | "Daily"
+  | "Weekly"
+  | "Monthly"
+  | "Year to Date"
+  | "Trailing 12 Months"
+  | "Quarterly"
+  | "Custom";
+
+interface ProductionEntry {
+  id: string;
+  logDate: string;
+  tonnage: number;
+  pricePerTon: number;
+  totalAmount: number;
+  clientName: string;
+  projectNotes?: string | null;
+  fileUrl?: string | null;
+  fileName?: string | null;
+  photoHash?: string | null;
+  photoPreview?: string | null;
+  processingStatus?: string | null;
+  localOnly?: boolean;
+  createdAt?: string | null;
+}
+
+interface ProductionFormState {
+  date: string;
+  tonnage: string;
+  pricePerTon: string;
+  client: string;
+  customClient: string;
+  notes: string;
+}
+
+const PRODUCTION_STORAGE_KEY = "wastex.production.logs";
+
+const PRODUCTION_CLIENTS = [
+  "Panzarella Waste",
+  "City of Fort Lauderdale",
+  "Broward County",
+  "Custom",
+];
+
+const getDefaultProductionForm = (): ProductionFormState => ({
+  date: new Date().toISOString().split("T")[0],
+  tonnage: "",
+  pricePerTon: "20",
+  client: PRODUCTION_CLIENTS[0],
+  customClient: "",
+  notes: "",
+});
+
+const PRODUCTION_PERIOD_OPTIONS: ProductionPeriod[] = [
+  "Daily",
+  "Weekly",
+  "Monthly",
+  "Year to Date",
+  "Trailing 12 Months",
+  "Quarterly",
+  "Custom",
+];
+
+const PRODUCTION_MONTH_OPTIONS = [
+  { value: 0, label: "January" },
+  { value: 1, label: "February" },
+  { value: 2, label: "March" },
+  { value: 3, label: "April" },
+  { value: 4, label: "May" },
+  { value: 5, label: "June" },
+  { value: 6, label: "July" },
+  { value: 7, label: "August" },
+  { value: 8, label: "September" },
+  { value: 9, label: "October" },
+  { value: 10, label: "November" },
+  { value: 11, label: "December" },
+];
+
+const PRODUCTION_QUARTER_OPTIONS = [1, 2, 3, 4];
+
 const insights: Insight[] = [
   {
     title: "Revenue trending up",
@@ -195,7 +405,7 @@ const insights: Insight[] = [
 export default function EnhancedMobileDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reportType, setReportType] = useState<
-    "pl" | "cf" | "ar" | "ap" | "payroll"
+    "pl" | "cf" | "ar" | "ap" | "payroll" | "production"
   >("pl");
   const [reportPeriod, setReportPeriod] = useState<
     "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly"
@@ -242,6 +452,755 @@ export default function EnhancedMobileDashboard() {
   const [recognition, setRecognition] = useState<any>(null);
 
   const buttonRef = useRef<HTMLDivElement>(null);
+
+  const [productionPeriod, setProductionPeriod] = useState<ProductionPeriod>("Daily");
+  const [productionCustomStart, setProductionCustomStart] = useState<string>("");
+  const [productionCustomEnd, setProductionCustomEnd] = useState<string>("");
+  const [productionDailyDate, setProductionDailyDate] = useState<string>(() =>
+    format(new Date(), "yyyy-MM-dd"),
+  );
+  const [productionWeeklyDate, setProductionWeeklyDate] = useState<string>(() =>
+    format(new Date(), "yyyy-MM-dd"),
+  );
+  const [productionMonthlyMonth, setProductionMonthlyMonth] = useState<number>(() =>
+    new Date().getMonth(),
+  );
+  const [productionMonthlyYear, setProductionMonthlyYear] = useState<number>(() =>
+    new Date().getFullYear(),
+  );
+  const [productionQuarter, setProductionQuarter] = useState<number>(() =>
+    getQuarter(new Date()),
+  );
+  const [productionQuarterYear, setProductionQuarterYear] = useState<number>(() =>
+    new Date().getFullYear(),
+  );
+  const [productionYearToDateYear, setProductionYearToDateYear] = useState<number>(() =>
+    new Date().getFullYear(),
+  );
+  const [productionTrailingMonth, setProductionTrailingMonth] = useState<number>(() =>
+    new Date().getMonth(),
+  );
+  const [productionTrailingYear, setProductionTrailingYear] = useState<number>(() =>
+    new Date().getFullYear(),
+  );
+  const productionYearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return Array.from({ length: 12 }, (_, index) => currentYear + 1 - index);
+  }, []);
+  const [showProductionCustomModal, setShowProductionCustomModal] = useState(false);
+  const [productionEntries, setProductionEntries] = useState<ProductionEntry[]>([]);
+  const [productionLoading, setProductionLoading] = useState(false);
+  const [productionSaving, setProductionSaving] = useState(false);
+  const [productionSyncing, setProductionSyncing] = useState(false);
+  const [showProductionModal, setShowProductionModal] = useState(false);
+  const [productionErrors, setProductionErrors] = useState<Record<string, string>>({});
+  const [productionPhotoFile, setProductionPhotoFile] = useState<File | null>(null);
+  const [productionPhotoPreview, setProductionPhotoPreview] = useState<string | null>(null);
+  const [productionPhotoHash, setProductionPhotoHash] = useState<string | null>(null);
+  const [productionNotice, setProductionNotice] = useState<string | null>(null);
+  const [showProductionPhoto, setShowProductionPhoto] = useState<string | null>(null);
+  const [productionViewAll, setProductionViewAll] = useState(false);
+  const [productionDuplicateAlert, setProductionDuplicateAlert] = useState<string | null>(null);
+
+  const [productionForm, setProductionForm] = useState<ProductionFormState>(
+    getDefaultProductionForm,
+  );
+
+  const persistProductionEntries = useCallback((entries: ProductionEntry[]) => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(PRODUCTION_STORAGE_KEY, JSON.stringify(entries));
+    } catch (error) {
+      console.error("Failed to persist production entries", error);
+    }
+  }, []);
+
+  const updateProductionEntries = useCallback(
+    (updater: (prev: ProductionEntry[]) => ProductionEntry[]) => {
+      setProductionEntries((prev) => {
+        const next = updater(prev);
+        persistProductionEntries(next);
+        return next;
+      });
+    },
+    [persistProductionEntries],
+  );
+
+  const loadProductionEntriesFromStorage = useCallback(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const stored = localStorage.getItem(PRODUCTION_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as ProductionEntry[];
+        setProductionEntries(parsed);
+      }
+    } catch (error) {
+      console.error("Failed to load production entries from storage", error);
+    }
+  }, []);
+
+  const computeFileHash = useCallback(async (file: Blob) => {
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  }, []);
+
+  const compressImage = useCallback(async (file: File) => {
+    if (typeof window === "undefined") return file;
+    try {
+      if ("createImageBitmap" in window) {
+        const bitmap = await createImageBitmap(file);
+        const maxDimension = 1600;
+        const scale = Math.min(
+          maxDimension / bitmap.width,
+          maxDimension / bitmap.height,
+          1,
+        );
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return file;
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        const blob: Blob | null = await new Promise((resolve) =>
+          canvas.toBlob(resolve, "image/jpeg", 0.8),
+        );
+        if (!blob) return file;
+        return new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), {
+          type: "image/jpeg",
+        });
+      }
+
+      // Fallback compression using HTMLImageElement
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = dataUrl;
+      });
+      const maxDimension = 1600;
+      const scale = Math.min(maxDimension / image.width, maxDimension / image.height, 1);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return file;
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob: Blob | null = await new Promise((resolve) =>
+        canvas.toBlob(resolve, "image/jpeg", 0.8),
+      );
+      if (!blob) return file;
+      return new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), {
+        type: "image/jpeg",
+      });
+    } catch (error) {
+      console.error("Image compression failed", error);
+      return file;
+    }
+  }, []);
+
+  const clearProductionPhoto = useCallback(() => {
+    setProductionPhotoFile(null);
+    setProductionPhotoPreview(null);
+    setProductionPhotoHash(null);
+    setProductionDuplicateAlert(null);
+  }, []);
+
+  const resetProductionForm = useCallback(() => {
+    setProductionForm(getDefaultProductionForm());
+    setProductionErrors({});
+    clearProductionPhoto();
+  }, [clearProductionPhoto]);
+
+  const handleProductionFieldChange = useCallback(
+    (field: keyof ProductionFormState) =>
+      (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+        const value = event.target.value;
+        setProductionForm((prev) => ({ ...prev, [field]: value }));
+        setProductionErrors((prev) => {
+          const key = field as string;
+          if (!prev[key]) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      },
+    [],
+  );
+
+  const handleProductionClientChange = useCallback((value: string) => {
+    setProductionForm((prev) => ({
+      ...prev,
+      client: value,
+      customClient: value === "Custom" ? prev.customClient : "",
+    }));
+    setProductionErrors((prev) => {
+      if (!prev.client) return prev;
+      const next = { ...prev };
+      delete next.client;
+      return next;
+    });
+  }, []);
+
+  const handleProductionPhotoChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      try {
+        setProductionNotice(null);
+        const compressed = await compressImage(file);
+        const hash = await computeFileHash(compressed);
+        const preview = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(compressed);
+        });
+        setProductionPhotoFile(compressed);
+        setProductionPhotoPreview(preview);
+        setProductionPhotoHash(hash);
+        setProductionDuplicateAlert(null);
+      } catch (error) {
+        console.error("Failed to process production photo", error);
+        setProductionNotice("Unable to process the selected photo. Please try again.");
+      } finally {
+        event.target.value = "";
+      }
+    },
+    [compressImage, computeFileHash],
+  );
+
+  const fetchProductionEntries = useCallback(async () => {
+    setProductionLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("wastex_production_logs")
+        .select("*")
+        .order("log_date", { ascending: false })
+        .limit(200);
+
+      if (error) throw error;
+
+      if (data) {
+        const mapped: ProductionEntry[] = (data as any[]).map((item: any, index: number) => ({
+          id:
+            item.id !== undefined && item.id !== null
+              ? `remote-${item.id}`
+              : `remote-${item.log_date}-${index}`,
+          logDate: item.log_date ?? new Date().toISOString().split("T")[0],
+          tonnage: Number(item.tonnage) || 0,
+          pricePerTon: Number(item.price_per_ton) || 0,
+          totalAmount: Number(item.total_amount) || 0,
+          clientName: item.client_name || "Unknown",
+          projectNotes: item.project_deliverable,
+          fileUrl: item.file_url,
+          fileName: item.file_name,
+          photoHash: item.photo_hash,
+          processingStatus: item.processing_status,
+          localOnly: false,
+          createdAt: item.created_at ?? null,
+        }));
+
+        updateProductionEntries((prev) => {
+          const localEntries = prev.filter((entry) => entry.localOnly);
+          const map = new Map<string, ProductionEntry>();
+          mapped.forEach((entry) => map.set(entry.id, entry));
+          localEntries.forEach((entry) => map.set(entry.id, entry));
+          return Array.from(map.values()).sort(
+            (a, b) =>
+              normalizeDate(parseDateValue(b.logDate)).getTime() -
+              normalizeDate(parseDateValue(a.logDate)).getTime(),
+          );
+        });
+      }
+    } catch (error) {
+      console.error("Failed to fetch production entries from Supabase", error);
+      setProductionNotice("Unable to sync production data. Displaying saved entries.");
+    } finally {
+      setProductionLoading(false);
+    }
+  }, [updateProductionEntries]);
+
+  const syncOfflineEntries = useCallback(
+    async (entriesOverride?: ProductionEntry[]) => {
+      const baseEntries = entriesOverride ?? productionEntries;
+      const offlineEntries = baseEntries.filter((entry) => entry.localOnly);
+      if (!offlineEntries.length) return;
+
+      setProductionSyncing(true);
+      const updatedEntries = [...baseEntries];
+      let syncedCount = 0;
+
+      try {
+        for (const offline of offlineEntries) {
+          const index = updatedEntries.findIndex((entry) => entry.id === offline.id);
+          if (index === -1) continue;
+          try {
+            let fileUrl = offline.fileUrl ?? null;
+            let fileName = offline.fileName ?? null;
+            let photoHash = offline.photoHash ?? null;
+            let duplicateNotified = false;
+
+            if (!fileUrl && offline.photoPreview) {
+              const response = await fetch(offline.photoPreview);
+              const blob = await response.blob();
+              const uploadFile = new File(
+                [blob],
+                fileName || `production-${offline.id}.jpg`,
+                { type: blob.type || "image/jpeg" },
+              );
+              photoHash = await computeFileHash(uploadFile);
+
+              const { data: duplicate, error: duplicateError } = await supabase
+                .from("wastex_production_logs")
+                .select("file_url, file_name, id")
+                .eq("photo_hash", photoHash)
+                .maybeSingle();
+
+              if (!duplicateError && duplicate) {
+                fileUrl = duplicate.file_url;
+                fileName = duplicate.file_name;
+                duplicateNotified = true;
+              } else {
+                const ext = uploadFile.name.split(".").pop() || "jpg";
+                const uploadPath = `mobile/${offline.logDate}-${crypto.randomUUID()}.${ext}`;
+                const { error: uploadError } = await supabase
+                  .storage
+                  .from("production-photos")
+                  .upload(uploadPath, uploadFile, { upsert: false });
+                if (uploadError) throw uploadError;
+                const { data: publicUrl } = supabase
+                  .storage
+                  .from("production-photos")
+                  .getPublicUrl(uploadPath);
+                fileUrl = publicUrl?.publicUrl ?? fileUrl;
+                fileName = uploadPath;
+              }
+            }
+
+            const { data: inserted, error: insertError } = await supabase
+              .from("wastex_production_logs")
+              .insert({
+                log_date: offline.logDate,
+                tonnage: offline.tonnage,
+                price_per_ton: offline.pricePerTon,
+                total_amount: offline.totalAmount,
+                client_name: offline.clientName,
+                project_deliverable: offline.projectNotes ?? null,
+                approval_name: null,
+                file_name: fileName,
+                file_url: fileUrl,
+                photo_hash: photoHash,
+                processing_status: "Mobile Entry",
+              })
+              .select()
+              .maybeSingle();
+
+            if (insertError) throw insertError;
+
+            updatedEntries[index] = {
+              ...offline,
+              id:
+                inserted?.id !== undefined && inserted?.id !== null
+                  ? `remote-${inserted.id}`
+                  : offline.id,
+              fileUrl: fileUrl ?? offline.fileUrl,
+              fileName: fileName ?? offline.fileName,
+              photoHash: photoHash ?? offline.photoHash,
+              localOnly: false,
+              processingStatus: inserted?.processing_status ?? "Mobile Entry",
+            };
+
+            if (duplicateNotified) {
+              setProductionDuplicateAlert(
+                "Duplicate photo detected. Existing upload reused to save storage.",
+              );
+            }
+
+            syncedCount += 1;
+          } catch (error) {
+            console.error("Failed to sync production entry", error);
+          }
+        }
+
+        updatedEntries.sort(
+          (a, b) =>
+            normalizeDate(parseDateValue(b.logDate)).getTime() -
+            normalizeDate(parseDateValue(a.logDate)).getTime(),
+        );
+
+        setProductionEntries(updatedEntries);
+        persistProductionEntries(updatedEntries);
+
+        if (syncedCount > 0) {
+          setProductionNotice(
+            `Synced ${syncedCount} production entr${syncedCount > 1 ? "ies" : "y"} with Supabase.`,
+          );
+        }
+      } finally {
+        setProductionSyncing(false);
+      }
+    },
+    [computeFileHash, persistProductionEntries, productionEntries],
+  );
+
+  const productionRange = useMemo(
+    () =>
+      getProductionPeriodRange(productionPeriod, {
+        customStart: productionCustomStart,
+        customEnd: productionCustomEnd,
+        dailyDate: productionDailyDate,
+        weeklyDate: productionWeeklyDate,
+        monthlyMonth: productionMonthlyMonth,
+        monthlyYear: productionMonthlyYear,
+        quarter: productionQuarter,
+        quarterYear: productionQuarterYear,
+        ytdYear: productionYearToDateYear,
+        trailingMonth: productionTrailingMonth,
+        trailingYear: productionTrailingYear,
+      }),
+    [
+      productionPeriod,
+      productionCustomStart,
+      productionCustomEnd,
+      productionDailyDate,
+      productionWeeklyDate,
+      productionMonthlyMonth,
+      productionMonthlyYear,
+      productionQuarter,
+      productionQuarterYear,
+      productionYearToDateYear,
+      productionTrailingMonth,
+      productionTrailingYear,
+    ],
+  );
+
+  const productionRangeLabel = useMemo(() => {
+    if (!productionRange) {
+      return productionPeriod === "Custom" ? "Select Custom Range" : "All Activity";
+    }
+
+    if (isSameDay(productionRange.start, productionRange.end)) {
+      return format(productionRange.start, "MMM d, yyyy");
+    }
+
+    return `${format(productionRange.start, "MMM d, yyyy")} - ${format(
+      productionRange.end,
+      "MMM d, yyyy",
+    )}`;
+  }, [productionRange, productionPeriod]);
+
+  const filteredProductionEntries = useMemo(() => {
+    const sorted = [...productionEntries].sort(
+      (a, b) =>
+        normalizeDate(parseDateValue(b.logDate)).getTime() -
+        normalizeDate(parseDateValue(a.logDate)).getTime(),
+    );
+
+    if (!productionRange) {
+      return sorted;
+    }
+
+    return sorted.filter((entry) => {
+      const entryDate = normalizeDate(parseDateValue(entry.logDate));
+      return isWithinInterval(entryDate, {
+        start: productionRange.start,
+        end: productionRange.end,
+      });
+    });
+  }, [productionEntries, productionRange]);
+
+  const productionStats = useMemo(() => {
+    if (!filteredProductionEntries.length) {
+      return {
+        totalTonnage: 0,
+        totalRevenue: 0,
+        averageTonnage: 0,
+        productionDays: 0,
+      };
+    }
+
+    const totalTonnage = filteredProductionEntries.reduce(
+      (sum, entry) => sum + (Number.isFinite(entry.tonnage) ? entry.tonnage : 0),
+      0,
+    );
+    const totalRevenue = filteredProductionEntries.reduce(
+      (sum, entry) => sum + (Number.isFinite(entry.totalAmount) ? entry.totalAmount : 0),
+      0,
+    );
+    const uniqueDays = new Set(
+      filteredProductionEntries.map((entry) =>
+        format(normalizeDate(parseDateValue(entry.logDate)), "yyyy-MM-dd"),
+      ),
+    );
+    const productionDays = uniqueDays.size;
+    const averageTonnage = productionDays
+      ? totalTonnage / Math.max(productionDays, 1)
+      : 0;
+
+    return {
+      totalTonnage,
+      totalRevenue,
+      averageTonnage,
+      productionDays,
+    };
+  }, [filteredProductionEntries]);
+
+  const productionHasOffline = useMemo(
+    () => productionEntries.some((entry) => entry.localOnly),
+    [productionEntries],
+  );
+
+  const productionFormTotal = useMemo(() => {
+    const tonnage = Number(productionForm.tonnage || "0");
+    const price = Number(productionForm.pricePerTon || "0");
+    if (!Number.isFinite(tonnage) || !Number.isFinite(price)) return 0;
+    return tonnage * price;
+  }, [productionForm.tonnage, productionForm.pricePerTon]);
+
+  const visibleProductionEntries = useMemo(
+    () => (productionViewAll ? filteredProductionEntries : filteredProductionEntries.slice(0, 5)),
+    [filteredProductionEntries, productionViewAll],
+  );
+
+  const openProductionModal = useCallback(() => {
+    setShowProductionModal(true);
+    setProductionDuplicateAlert(null);
+    setProductionNotice(null);
+  }, []);
+
+  const closeProductionModal = useCallback(() => {
+    setShowProductionModal(false);
+    resetProductionForm();
+  }, [resetProductionForm]);
+
+  const openProductionCustomRange = useCallback(() => {
+    if (!productionCustomStart) {
+      setProductionCustomStart(new Date().toISOString().split("T")[0]);
+    }
+    if (!productionCustomEnd) {
+      setProductionCustomEnd(new Date().toISOString().split("T")[0]);
+    }
+    setShowProductionCustomModal(true);
+  }, [productionCustomStart, productionCustomEnd]);
+
+  const closeProductionCustomRange = useCallback(() => {
+    setShowProductionCustomModal(false);
+  }, []);
+
+  const handleProductionSubmit = useCallback(async () => {
+    const errors: Record<string, string> = {};
+
+    if (!productionForm.date) {
+      errors.date = "Date is required";
+    }
+
+    const tonnage = Number(productionForm.tonnage);
+    if (!productionForm.tonnage || !Number.isFinite(tonnage) || tonnage <= 0) {
+      errors.tonnage = "Enter tonnage greater than 0";
+    }
+
+    const pricePerTon = Number(productionForm.pricePerTon);
+    if (!productionForm.pricePerTon || !Number.isFinite(pricePerTon) || pricePerTon <= 0) {
+      errors.pricePerTon = "Enter a positive price";
+    }
+
+    const clientName =
+      productionForm.client === "Custom"
+        ? productionForm.customClient.trim()
+        : productionForm.client;
+
+    if (!clientName) {
+      errors.client = "Client is required";
+    }
+
+    if (productionForm.client === "Custom" && !productionForm.customClient.trim()) {
+      errors.customClient = "Enter the client name";
+    }
+
+    if (Object.keys(errors).length) {
+      setProductionErrors(errors);
+      return;
+    }
+
+    const baseEntry: ProductionEntry = {
+      id: crypto.randomUUID(),
+      logDate: productionForm.date,
+      tonnage,
+      pricePerTon,
+      totalAmount: tonnage * pricePerTon,
+      clientName,
+      projectNotes: productionForm.notes ? productionForm.notes.trim() : null,
+      fileUrl: null,
+      fileName: null,
+      photoHash: productionPhotoHash,
+      photoPreview: productionPhotoPreview,
+      processingStatus: "Mobile Entry",
+      localOnly: false,
+    };
+
+    setProductionSaving(true);
+    let duplicateNotified = false;
+
+    try {
+      let fileUrl = baseEntry.fileUrl;
+      let fileName = baseEntry.fileName;
+      let photoHash = productionPhotoHash;
+
+      if (productionPhotoFile && productionPhotoHash) {
+        const { data: duplicate, error: duplicateError } = await supabase
+          .from("wastex_production_logs")
+          .select("file_url, file_name, id")
+          .eq("photo_hash", productionPhotoHash)
+          .maybeSingle();
+
+        if (!duplicateError && duplicate) {
+          fileUrl = duplicate.file_url;
+          fileName = duplicate.file_name;
+          duplicateNotified = true;
+        } else {
+          const ext = productionPhotoFile.name.split(".").pop() || "jpg";
+          const uploadPath = `mobile/${baseEntry.logDate}-${crypto.randomUUID()}.${ext}`;
+          const { error: uploadError } = await supabase
+            .storage
+            .from("production-photos")
+            .upload(uploadPath, productionPhotoFile, { upsert: false });
+          if (uploadError) throw uploadError;
+          const { data: publicUrl } = supabase
+            .storage
+            .from("production-photos")
+            .getPublicUrl(uploadPath);
+          fileUrl = publicUrl?.publicUrl ?? null;
+          fileName = uploadPath;
+        }
+      }
+
+      const { data: inserted, error: insertError } = await supabase
+        .from("wastex_production_logs")
+        .insert({
+          log_date: baseEntry.logDate,
+          tonnage: baseEntry.tonnage,
+          price_per_ton: baseEntry.pricePerTon,
+          total_amount: baseEntry.totalAmount,
+          client_name: baseEntry.clientName,
+          project_deliverable: baseEntry.projectNotes ?? null,
+          approval_name: null,
+          file_name: fileName,
+          file_url: fileUrl,
+          photo_hash: photoHash,
+          processing_status: "Mobile Entry",
+        })
+        .select()
+        .maybeSingle();
+
+      if (insertError) throw insertError;
+
+      const savedEntry: ProductionEntry = {
+        ...baseEntry,
+        id:
+          inserted?.id !== undefined && inserted?.id !== null
+            ? `remote-${inserted.id}`
+            : baseEntry.id,
+        fileUrl: fileUrl ?? baseEntry.fileUrl,
+        fileName: fileName ?? baseEntry.fileName,
+        photoHash: photoHash ?? baseEntry.photoHash,
+        photoPreview: productionPhotoPreview,
+        localOnly: false,
+        processingStatus: inserted?.processing_status ?? "Mobile Entry",
+      };
+
+      updateProductionEntries((prev) => [savedEntry, ...prev.filter((entry) => entry.id !== savedEntry.id)]);
+      setProductionNotice("Production log synced successfully.");
+      if (duplicateNotified) {
+        setProductionDuplicateAlert(
+          "Duplicate photo detected. Existing upload reused to save storage.",
+        );
+      }
+      closeProductionModal();
+    } catch (error) {
+      console.error("Failed to submit production log", error);
+      const offlineEntry: ProductionEntry = {
+        ...baseEntry,
+        fileUrl: baseEntry.fileUrl,
+        fileName: baseEntry.fileName ?? (productionPhotoFile ? productionPhotoFile.name : null),
+        photoHash: productionPhotoHash ?? null,
+        photoPreview: productionPhotoPreview,
+        localOnly: true,
+      };
+
+      updateProductionEntries((prev) => [offlineEntry, ...prev]);
+      setProductionNotice("Offline mode: entry saved locally and will sync when online.");
+      closeProductionModal();
+      setTimeout(() => {
+        syncOfflineEntries();
+      }, 500);
+    } finally {
+      setProductionSaving(false);
+    }
+  }, [
+    closeProductionModal,
+    productionForm,
+    productionPhotoFile,
+    productionPhotoHash,
+    productionPhotoPreview,
+    syncOfflineEntries,
+    updateProductionEntries,
+  ]);
+
+  const handleProductionPeriodSelect = useCallback(
+    (option: ProductionPeriod) => {
+      setProductionPeriod(option);
+      if (option === "Custom") {
+        openProductionCustomRange();
+      } else {
+        setShowProductionCustomModal(false);
+      }
+    },
+    [openProductionCustomRange],
+  );
+
+  useEffect(() => {
+    loadProductionEntriesFromStorage();
+  }, [loadProductionEntriesFromStorage]);
+
+  useEffect(() => {
+    fetchProductionEntries();
+  }, [fetchProductionEntries]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleOnline = () => {
+      fetchProductionEntries();
+      syncOfflineEntries();
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [fetchProductionEntries, syncOfflineEntries]);
+
+  useEffect(() => {
+    if (reportType !== "production") {
+      setShowProductionModal(false);
+      setShowProductionCustomModal(false);
+      setShowProductionPhoto(null);
+      return;
+    }
+    fetchProductionEntries();
+  }, [reportType, fetchProductionEntries]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!navigator.onLine) return;
+    if (productionEntries.some((entry) => entry.localOnly)) {
+      syncOfflineEntries(productionEntries);
+    }
+  }, [productionEntries, syncOfflineEntries]);
 
   // Initialize speech recognition
   useEffect(() => {
@@ -554,6 +1513,10 @@ export default function EnhancedMobileDashboard() {
 
   useEffect(() => {
     const load = async () => {
+      if (reportType === "production") {
+        setProperties([]);
+        return;
+      }
       if (reportType === "ap") {
         const { data } = await supabase
           .from("ap_aging")
@@ -1417,48 +2380,219 @@ export default function EnhancedMobileDashboard() {
               ? "Cash Flow Dashboard"
               : reportType === "payroll"
               ? "Payroll Dashboard"
+              : reportType === "production"
+              ? "Production Dashboard"
               : reportType === "ap"
               ? "A/P Aging Report"
               : "A/R Aging Report"}
           </h1>
           <p style={{ fontSize: '14px', opacity: 0.9 }}>
-            {reportType === "ar" || reportType === "ap" ? "As of Today" : `${getMonthName(month)} ${year}`} • {properties.length}{" "}
-            {reportType === "payroll" ? "Departments" : reportType === "ap" ? "Vendors" : "Customers"}
+            {reportType === "production"
+              ? `${productionRangeLabel} • ${filteredProductionEntries.length} ${
+                  filteredProductionEntries.length === 1 ? "Entry" : "Entries"
+                }`
+              : `${
+                  reportType === "ar" || reportType === "ap"
+                    ? "As of Today"
+                    : `${getMonthName(month)} ${year}`
+                } • ${properties.length} ${
+                  reportType === "payroll"
+                    ? "Departments"
+                    : reportType === "ap"
+                    ? "Vendors"
+                    : "Customers"
+                }`}
           </p>
         </div>
 
-        {/* Company Total - Enhanced */}
-        <div
-          onClick={() => handlePropertySelect(null)}
-          style={{
-            background: 'rgba(255, 255, 255, 0.15)',
-            borderRadius: '12px',
-            padding: '20px',
-            backdropFilter: 'blur(10px)',
-            border: '1px solid rgba(255, 255, 255, 0.2)',
-            cursor: 'pointer',
-            transition: 'all 0.3s ease'
-          }}
-          onMouseOver={(e) => {
-            e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)';
-            e.currentTarget.style.transform = 'translateY(-2px)';
-          }}
-          onMouseOut={(e) => {
-            e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
-            e.currentTarget.style.transform = 'translateY(0)';
-          }}
-        >
-          <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-            <span style={{ fontSize: '14px', opacity: 0.9 }}>Company Total</span>
-            <div style={{ fontSize: '32px', fontWeight: 'bold', margin: '8px 0' }}>
-              {formatCompactCurrency(companyTotals.net)}
+        {/* Company Total / Production Summary */}
+        {reportType === "production" ? (
+          <div
+            style={{
+              background: 'rgba(255, 255, 255, 0.15)',
+              borderRadius: '12px',
+              padding: '20px',
+              backdropFilter: 'blur(10px)',
+              border: '1px solid rgba(255, 255, 255, 0.2)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  background: 'rgba(255,255,255,0.2)',
+                  padding: '10px',
+                  borderRadius: '12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  <Factory size={24} color="#ffffff" />
+                </div>
+                <div>
+                  <div style={{ fontSize: '18px', fontWeight: '600' }}>Production Overview</div>
+                  <div style={{ fontSize: '12px', opacity: 0.85 }}>{productionRangeLabel}</div>
+                </div>
+              </div>
+              <button
+                onClick={openProductionModal}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'white',
+                  color: BRAND_COLORS.accent,
+                  border: 'none',
+                  borderRadius: '999px',
+                  padding: '10px 16px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.12)'
+                }}
+              >
+                <PlusCircle size={18} />
+                Log Production
+              </button>
+            </div>
+
+            {productionNotice && (
+              <div style={{
+                background: 'rgba(255,255,255,0.2)',
+                borderRadius: '10px',
+                padding: '10px 12px',
+                marginBottom: '12px',
+                fontSize: '12px'
+              }}>
+                {productionNotice}
+              </div>
+            )}
+
+            {productionDuplicateAlert && (
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.2)',
+                borderRadius: '10px',
+                padding: '10px 12px',
+                marginBottom: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '12px'
+              }}>
+                <AlertCircle size={16} />
+                <span>{productionDuplicateAlert}</span>
+              </div>
+            )}
+
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: '12px',
+              marginBottom: '16px'
+            }}>
+              <div style={{ background: 'rgba(255,255,255,0.18)', padding: '12px', borderRadius: '12px' }}>
+                <div style={{ fontSize: '12px', opacity: 0.8 }}>Total Tonnage</div>
+                <div style={{ fontSize: '20px', fontWeight: 600 }}>
+                  {formatTonnage(productionStats.totalTonnage)} <span style={{ fontSize: '12px' }}>tons</span>
+                </div>
+              </div>
+              <div style={{ background: 'rgba(255,255,255,0.18)', padding: '12px', borderRadius: '12px' }}>
+                <div style={{ fontSize: '12px', opacity: 0.8 }}>Total Revenue</div>
+                <div style={{ fontSize: '20px', fontWeight: 600 }}>
+                  {formatCurrency(productionStats.totalRevenue)}
+                </div>
+              </div>
+              <div style={{ background: 'rgba(255,255,255,0.18)', padding: '12px', borderRadius: '12px' }}>
+                <div style={{ fontSize: '12px', opacity: 0.8 }}>Avg Tons / Day</div>
+                <div style={{ fontSize: '20px', fontWeight: 600 }}>
+                  {formatTonnage(productionStats.averageTonnage)}
+                </div>
+              </div>
+              <div style={{ background: 'rgba(255,255,255,0.18)', padding: '12px', borderRadius: '12px' }}>
+                <div style={{ fontSize: '12px', opacity: 0.8 }}>Production Days</div>
+                <div style={{ fontSize: '20px', fontWeight: 600 }}>
+                  {productionStats.productionDays}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => fetchProductionEntries()}
+                disabled={productionLoading}
+                style={{
+                  flex: 1,
+                  minWidth: '140px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  background: 'rgba(255,255,255,0.2)',
+                  border: 'none',
+                  borderRadius: '10px',
+                  padding: '10px 12px',
+                  color: 'white',
+                  fontWeight: 600,
+                  cursor: productionLoading ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <RefreshCcw size={16} /> {productionLoading ? 'Refreshing...' : 'Refresh Data'}
+              </button>
+              {productionHasOffline && (
+                <button
+                  onClick={() => syncOfflineEntries()}
+                  disabled={productionSyncing}
+                  style={{
+                    flex: 1,
+                    minWidth: '140px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    background: 'rgba(255,255,255,0.2)',
+                    border: 'none',
+                    borderRadius: '10px',
+                    padding: '10px 12px',
+                    color: 'white',
+                    fontWeight: 600,
+                    cursor: productionSyncing ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <Upload size={16} /> {productionSyncing ? 'Syncing...' : 'Sync Offline Logs'}
+                </button>
+              )}
             </div>
           </div>
-          
-          {reportType === "pl" ? (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', textAlign: 'center' }}>
-              <div>
-                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+        ) : (
+          <div
+            onClick={() => handlePropertySelect(null)}
+            style={{
+              background: 'rgba(255, 255, 255, 0.15)',
+              borderRadius: '12px',
+              padding: '20px',
+              backdropFilter: 'blur(10px)',
+              border: '1px solid rgba(255, 255, 255, 0.2)',
+              cursor: 'pointer',
+              transition: 'all 0.3s ease'
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)';
+              e.currentTarget.style.transform = 'translateY(-2px)';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
+              e.currentTarget.style.transform = 'translateY(0)';
+            }}
+          >
+            <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+              <span style={{ fontSize: '14px', opacity: 0.9 }}>Company Total</span>
+              <div style={{ fontSize: '32px', fontWeight: 'bold', margin: '8px 0' }}>
+                {formatCompactCurrency(companyTotals.net)}
+              </div>
+            </div>
+
+            {reportType === "pl" ? (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', textAlign: 'center' }}>
+                <div>
+                  <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
                   {formatCompactCurrency(companyTotals.revenue)}
                 </div>
                 <div style={{ fontSize: '11px', opacity: 0.8 }}>Revenue</div>
@@ -1551,8 +2685,9 @@ export default function EnhancedMobileDashboard() {
                 <div style={{ fontSize: '11px', opacity: 0.8 }}>120+</div>
               </div>
             </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </header>
 
       {/* Hamburger Dropdown Menu */}
@@ -1585,18 +2720,307 @@ export default function EnhancedMobileDashboard() {
               value={reportType}
               onChange={(e) =>
                 setReportType(
-                  e.target.value as "pl" | "cf" | "ar" | "ap" | "payroll",
+                  e.target.value as "pl" | "cf" | "ar" | "ap" | "payroll" | "production",
                 )
               }
             >
               <option value="pl">P&L Statement</option>
               <option value="cf">Cash Flow Statement</option>
               <option value="payroll">Payroll</option>
+              <option value="production">Production</option>
               <option value="ar">A/R Aging Report</option>
               <option value="ap">A/P Aging Report</option>
             </select>
           </div>
-          {reportType !== "ar" && reportType !== "ap" && (
+          {reportType === "production" ? (
+            <>
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: BRAND_COLORS.accent }}>
+                  Production Period
+                </label>
+                <select
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                  value={productionPeriod}
+                  onChange={(e) =>
+                    handleProductionPeriodSelect(e.target.value as ProductionPeriod)
+                  }
+                >
+              {PRODUCTION_PERIOD_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+          {productionPeriod === "Daily" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Production Date
+              </label>
+              <input
+                type="date"
+                value={productionDailyDate}
+                onChange={(e) => setProductionDailyDate(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                  borderRadius: '8px',
+                  fontSize: '16px'
+                }}
+              />
+            </div>
+          )}
+          {productionPeriod === "Weekly" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Week Containing
+              </label>
+              <input
+                type="date"
+                value={productionWeeklyDate}
+                onChange={(e) => setProductionWeeklyDate(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                  borderRadius: '8px',
+                  fontSize: '16px'
+                }}
+              />
+              <p style={{ fontSize: '12px', marginTop: '8px', color: '#64748b' }}>
+                Select any day to view that week&apos;s Monday through Sunday production.
+              </p>
+            </div>
+          )}
+          {productionPeriod === "Monthly" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Month &amp; Year
+              </label>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <select
+                  value={productionMonthlyMonth}
+                  onChange={(e) => setProductionMonthlyMonth(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 150px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {PRODUCTION_MONTH_OPTIONS.map((month) => (
+                    <option key={month.value} value={month.value}>
+                      {month.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={productionMonthlyYear}
+                  onChange={(e) => setProductionMonthlyYear(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 120px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {productionYearOptions.map((year) => (
+                    <option key={`monthly-${year}`} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+          {productionPeriod === "Quarterly" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Quarter &amp; Year
+              </label>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <select
+                  value={productionQuarter}
+                  onChange={(e) => setProductionQuarter(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 150px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {PRODUCTION_QUARTER_OPTIONS.map((quarterOption) => (
+                    <option key={`quarter-${quarterOption}`} value={quarterOption}>
+                      Q{quarterOption}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={productionQuarterYear}
+                  onChange={(e) => setProductionQuarterYear(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 120px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {productionYearOptions.map((year) => (
+                    <option key={`quarter-year-${year}`} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+          {productionPeriod === "Year to Date" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Reporting Year
+              </label>
+              <select
+                value={productionYearToDateYear}
+                onChange={(e) => setProductionYearToDateYear(Number(e.target.value))}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                  borderRadius: '8px',
+                  fontSize: '16px'
+                }}
+              >
+                {productionYearOptions.map((year) => (
+                  <option key={`ytd-${year}`} value={year}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {productionPeriod === "Trailing 12 Months" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Ending Month
+              </label>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <select
+                  value={productionTrailingMonth}
+                  onChange={(e) => setProductionTrailingMonth(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 150px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {PRODUCTION_MONTH_OPTIONS.map((month) => (
+                    <option key={`trailing-month-${month.value}`} value={month.value}>
+                      {month.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={productionTrailingYear}
+                  onChange={(e) => setProductionTrailingYear(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 120px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {productionYearOptions.map((year) => (
+                    <option key={`trailing-year-${year}`} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+          {productionPeriod === "Custom" && (
+            <button
+              type="button"
+              onClick={openProductionCustomRange}
+              style={{
+                    width: '100%',
+                    marginBottom: '16px',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    background: 'white',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: BRAND_COLORS.accent,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {productionCustomStart && productionCustomEnd
+                    ? `${format(parseDateValue(productionCustomStart), 'MMM d, yyyy')} - ${format(
+                        parseDateValue(productionCustomEnd),
+                        'MMM d, yyyy'
+                      )}`
+                    : 'Select date range'}
+                </button>
+              )}
+            </>
+          ) : reportType !== "ar" && reportType !== "ap" ? (
             <>
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: BRAND_COLORS.accent }}>
@@ -1691,7 +3115,7 @@ export default function EnhancedMobileDashboard() {
                 </div>
               )}
             </>
-          )}
+          ) : null}
           <button
             style={{
               width: '100%',
@@ -1710,10 +3134,161 @@ export default function EnhancedMobileDashboard() {
           </button>
         </div>
       )}
+      {reportType === "production" ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', marginTop: '24px' }}>
+          {productionHasOffline && (
+            <div
+              style={{
+                background: 'white',
+                borderRadius: '16px',
+                padding: '16px',
+                border: `1px solid ${BRAND_COLORS.warning}33`,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                boxShadow: '0 4px 16px rgba(253, 186, 116, 0.2)'
+              }}
+            >
+              <AlertTriangle size={20} color={BRAND_COLORS.warning} />
+              <div>
+                <div style={{ fontWeight: 600, color: BRAND_COLORS.warning }}>Offline entries pending sync</div>
+                <div style={{ fontSize: '12px', color: '#475569' }}>
+                  We will upload saved production logs automatically once you are back online.
+                </div>
+              </div>
+            </div>
+          )}
 
-      {view === "overview" && (
-        <div>
-          {/* Portfolio Insights */}
+          <section
+            style={{
+              background: 'white',
+              borderRadius: '16px',
+              padding: '20px',
+              border: `1px solid ${BRAND_COLORS.gray[200]}`,
+              boxShadow: '0 4px 20px rgba(86, 182, 233, 0.08)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <div>
+                <h3 style={{ fontSize: '18px', fontWeight: '600', color: BRAND_COLORS.accent }}>Recent Production</h3>
+                <p style={{ fontSize: '12px', color: '#64748b' }}>{productionRangeLabel}</p>
+              </div>
+              {filteredProductionEntries.length > 5 && (
+                <button
+                  onClick={() => setProductionViewAll(!productionViewAll)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: 'none',
+                    border: 'none',
+                    color: BRAND_COLORS.accent,
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {productionViewAll ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      <ChevronLeft size={16} /> Show Less
+                    </span>
+                  ) : (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      View All <ChevronRight size={16} />
+                    </span>
+                  )}
+                </button>
+              )}
+            </div>
+
+            {productionLoading ? (
+              <div style={{ textAlign: 'center', padding: '24px', color: '#64748b', fontSize: '14px' }}>
+                Loading production activity...
+              </div>
+            ) : visibleProductionEntries.length ? (
+              <div style={{ display: 'grid', gap: '12px' }}>
+                {visibleProductionEntries.map((entry) => (
+                  <div
+                    key={entry.id}
+                    style={{
+                      display: 'flex',
+                      gap: '12px',
+                      alignItems: 'center',
+                      border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                      borderRadius: '12px',
+                      padding: '12px',
+                      background: 'rgba(248,250,252,0.9)'
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>
+                          {format(parseDateValue(entry.logDate), 'MMM d, yyyy')}
+                        </span>
+                        <span style={{ fontSize: '14px', fontWeight: 700, color: BRAND_COLORS.accent }}>
+                          {formatCurrency(entry.totalAmount)}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#475569', marginBottom: '4px', fontWeight: 600 }}>
+                        {entry.clientName}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#64748b' }}>
+                        {formatTonnage(entry.tonnage)} tons @ {formatCurrency(entry.pricePerTon)} per ton
+                      </div>
+                      {entry.projectNotes && (
+                        <div style={{ fontSize: '12px', color: '#475569', marginTop: '6px' }}>
+                          {entry.projectNotes}
+                        </div>
+                      )}
+                      {entry.localOnly && (
+                        <div style={{ marginTop: '8px', display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: BRAND_COLORS.warning, fontWeight: 600 }}>
+                          <AlertTriangle size={12} /> Pending Sync
+                        </div>
+                      )}
+                    </div>
+                    {(entry.fileUrl || entry.photoPreview) && (
+                      <button
+                        onClick={() => setShowProductionPhoto(entry.fileUrl || entry.photoPreview || null)}
+                        style={{
+                          border: 'none',
+                          background: 'rgba(86,182,233,0.15)',
+                          borderRadius: '12px',
+                          padding: 0,
+                          cursor: 'pointer',
+                          overflow: 'hidden'
+                        }}
+                      >
+                        <img
+                          src={entry.fileUrl || entry.photoPreview || ''}
+                          alt={`Production photo ${entry.logDate}`}
+                          style={{ width: '72px', height: '72px', objectFit: 'cover' }}
+                        />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  textAlign: 'center',
+                  padding: '24px',
+                  color: '#64748b',
+                  fontSize: '14px',
+                  background: 'rgba(248,250,252,0.7)',
+                  borderRadius: '12px',
+                  border: `1px dashed ${BRAND_COLORS.gray[200]}`
+                }}
+              >
+                No production logs for this period. Use the Log Production button above to add activity.
+              </div>
+            )}
+          </section>
+        </div>
+      ) : (
+        <>
+          {view === "overview" && (
+            <div>
+              {/* Portfolio Insights */}
           <div style={{
             background: 'white',
             borderRadius: '16px',
@@ -3357,6 +4932,484 @@ export default function EnhancedMobileDashboard() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+        </>
+      )}
+
+      {showProductionModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2100,
+            padding: '16px'
+          }}
+          onClick={closeProductionModal}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%',
+              maxWidth: '520px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              background: 'white',
+              borderRadius: '16px',
+              padding: '24px',
+              position: 'relative',
+              boxShadow: '0 12px 40px rgba(15, 23, 42, 0.25)'
+            }}
+          >
+            <button
+              onClick={closeProductionModal}
+              style={{
+                position: 'absolute',
+                top: '12px',
+                right: '12px',
+                border: 'none',
+                background: 'none',
+                cursor: 'pointer'
+              }}
+            >
+              <X size={20} />
+            </button>
+            <h3 style={{ fontSize: '20px', fontWeight: 600, color: BRAND_COLORS.accent, marginBottom: '16px' }}>
+              Log Production
+            </h3>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleProductionSubmit();
+              }}
+              style={{ display: 'grid', gap: '16px' }}
+            >
+              <div>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#0f172a' }}>
+                  Date
+                </label>
+                <input
+                  type="date"
+                  value={productionForm.date}
+                  onChange={handleProductionFieldChange('date')}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    fontSize: '14px'
+                  }}
+                />
+                {productionErrors.date && (
+                  <p style={{ fontSize: '12px', color: BRAND_COLORS.danger, marginTop: '4px' }}>
+                    {productionErrors.date}
+                  </p>
+                )}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#0f172a' }}>
+                    Tonnage
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    inputMode="decimal"
+                    value={productionForm.tonnage}
+                    onChange={handleProductionFieldChange('tonnage')}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: '10px',
+                      border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                      fontSize: '14px'
+                    }}
+                  />
+                  {productionErrors.tonnage && (
+                    <p style={{ fontSize: '12px', color: BRAND_COLORS.danger, marginTop: '4px' }}>
+                      {productionErrors.tonnage}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#0f172a' }}>
+                    Price per Ton
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    inputMode="decimal"
+                    value={productionForm.pricePerTon}
+                    onChange={handleProductionFieldChange('pricePerTon')}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: '10px',
+                      border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                      fontSize: '14px'
+                    }}
+                  />
+                  {productionErrors.pricePerTon && (
+                    <p style={{ fontSize: '12px', color: BRAND_COLORS.danger, marginTop: '4px' }}>
+                      {productionErrors.pricePerTon}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#0f172a' }}>
+                  Client
+                </label>
+                <select
+                  value={productionForm.client}
+                  onChange={(e) => handleProductionClientChange(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    fontSize: '14px'
+                  }}
+                >
+                  {PRODUCTION_CLIENTS.map((client) => (
+                    <option key={client} value={client}>
+                      {client}
+                    </option>
+                  ))}
+                </select>
+                {productionErrors.client && (
+                  <p style={{ fontSize: '12px', color: BRAND_COLORS.danger, marginTop: '4px' }}>
+                    {productionErrors.client}
+                  </p>
+                )}
+              </div>
+
+              {productionForm.client === 'Custom' && (
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#0f172a' }}>
+                    Custom Client Name
+                  </label>
+                  <input
+                    type="text"
+                    value={productionForm.customClient}
+                    onChange={handleProductionFieldChange('customClient')}
+                    placeholder="Enter client name"
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: '10px',
+                      border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                      fontSize: '14px'
+                    }}
+                  />
+                  {productionErrors.customClient && (
+                    <p style={{ fontSize: '12px', color: BRAND_COLORS.danger, marginTop: '4px' }}>
+                      {productionErrors.customClient}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#0f172a' }}>
+                  Total Amount
+                </label>
+                <div
+                  style={{
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: `1px dashed ${BRAND_COLORS.gray[200]}`,
+                    background: '#f8fafc',
+                    fontWeight: 600
+                  }}
+                >
+                  {formatCurrency(productionFormTotal)}
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#0f172a' }}>
+                  Project / Notes
+                </label>
+                <textarea
+                  value={productionForm.notes}
+                  onChange={handleProductionFieldChange('notes')}
+                  rows={3}
+                  placeholder="Optional notes"
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    fontSize: '14px',
+                    resize: 'vertical'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#0f172a' }}>
+                  Photo
+                </label>
+                <div
+                  style={{
+                    display: 'grid',
+                    gap: '12px',
+                    padding: '12px',
+                    borderRadius: '12px',
+                    border: `1px dashed ${BRAND_COLORS.gray[200]}`,
+                    background: '#f8fafc'
+                  }}
+                >
+                  <input
+                    id="production-photo"
+                    type="file"
+                    accept="image/*"
+                    onChange={handleProductionPhotoChange}
+                    style={{ display: 'none' }}
+                  />
+                  <label
+                    htmlFor="production-photo"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      background: `linear-gradient(135deg, ${BRAND_COLORS.primary}, ${BRAND_COLORS.secondary})`,
+                      color: 'white',
+                      padding: '10px 14px',
+                      borderRadius: '999px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      width: 'fit-content'
+                    }}
+                  >
+                    <Camera size={16} /> Add Photo
+                  </label>
+                  {productionPhotoPreview ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <img
+                        src={productionPhotoPreview}
+                        alt="Production preview"
+                        style={{ width: '96px', height: '96px', objectFit: 'cover', borderRadius: '12px' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={clearProductionPhoto}
+                        style={{
+                          border: 'none',
+                          background: 'none',
+                          color: BRAND_COLORS.danger,
+                          fontWeight: 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#64748b', fontSize: '12px' }}>
+                      <ImageIcon size={16} /> No photo selected
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                <button
+                  type="button"
+                  onClick={closeProductionModal}
+                  style={{
+                    padding: '12px 16px',
+                    borderRadius: '10px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    background: 'white',
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                    color: '#0f172a'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={productionSaving}
+                  style={{
+                    padding: '12px 16px',
+                    borderRadius: '10px',
+                    border: 'none',
+                    background: `linear-gradient(135deg, ${BRAND_COLORS.primary}, ${BRAND_COLORS.secondary})`,
+                    color: 'white',
+                    cursor: productionSaving ? 'not-allowed' : 'pointer',
+                    fontWeight: 600,
+                    minWidth: '120px'
+                  }}
+                >
+                  {productionSaving ? 'Saving...' : 'Save Log'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showProductionCustomModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2050,
+            padding: '16px'
+          }}
+          onClick={closeProductionCustomRange}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%',
+              maxWidth: '420px',
+              background: 'white',
+              borderRadius: '16px',
+              padding: '20px',
+              boxShadow: '0 16px 40px rgba(15,23,42,0.25)'
+            }}
+          >
+            <h3 style={{ fontSize: '18px', fontWeight: 600, color: BRAND_COLORS.accent, marginBottom: '12px' }}>
+              Custom Date Range
+            </h3>
+            <div style={{ display: 'grid', gap: '12px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px', color: '#0f172a' }}>
+                  Start Date
+                </label>
+                <input
+                  type="date"
+                  value={productionCustomStart}
+                  onChange={(e) => setProductionCustomStart(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px', color: '#0f172a' }}>
+                  End Date
+                </label>
+                <input
+                  type="date"
+                  value={productionCustomEnd}
+                  onChange={(e) => setProductionCustomEnd(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
+              <button
+                type="button"
+                onClick={closeProductionCustomRange}
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                  background: 'white',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  color: '#0f172a'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (productionCustomStart && productionCustomEnd) {
+                    if (normalizeDate(parseDateValue(productionCustomStart)) > normalizeDate(parseDateValue(productionCustomEnd))) {
+                      setProductionNotice('Custom range start date must be before end date.');
+                      return;
+                    }
+                    setShowProductionCustomModal(false);
+                  }
+                }}
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  border: 'none',
+                  background: `linear-gradient(135deg, ${BRAND_COLORS.primary}, ${BRAND_COLORS.secondary})`,
+                  color: 'white',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  minWidth: '100px'
+                }}
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showProductionPhoto && (
+        <div
+          onClick={() => setShowProductionPhoto(null)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15,23,42,0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2200,
+            padding: '16px'
+          }}
+        >
+          <div
+            style={{
+              background: 'white',
+              borderRadius: '16px',
+              padding: '16px',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              boxShadow: '0 12px 40px rgba(15,23,42,0.35)'
+            }}
+          >
+            <img
+              src={showProductionPhoto || ''}
+              alt="Production detail"
+              style={{ display: 'block', maxWidth: '80vw', maxHeight: '80vh', borderRadius: '12px' }}
+            />
+          </div>
         </div>
       )}
 
