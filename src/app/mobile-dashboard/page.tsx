@@ -366,7 +366,7 @@ const PRODUCTION_PERIOD_OPTIONS: ProductionPeriod[] = [
   "Custom",
 ];
 
-const SWIPE_ACTION_WIDTH = 160;
+const SWIPE_ACTION_WIDTH = 210;
 
 const sortProductionEntriesByDate = (entries: ProductionEntry[]) =>
   [...entries].sort(
@@ -3529,6 +3529,7 @@ export default function EnhancedMobileDashboard() {
                     : isOpen
                     ? -SWIPE_ACTION_WIDTH
                     : 0;
+                  const shouldRevealActions = isActive || isOpen || translateX !== 0;
 
                   return (
                     <div
@@ -3552,8 +3553,11 @@ export default function EnhancedMobileDashboard() {
                           gap: '8px',
                           padding: '0 12px',
                           background: 'linear-gradient(90deg, rgba(15, 23, 42, 0.04), rgba(15, 23, 42, 0.08))',
-                          minWidth: `${SWIPE_ACTION_WIDTH}px`,
+                          width: `${SWIPE_ACTION_WIDTH}px`,
                           justifyContent: 'flex-end',
+                          opacity: shouldRevealActions ? 1 : 0,
+                          pointerEvents: isOpen ? 'auto' : 'none',
+                          transition: 'opacity 0.15s ease-out',
                         }}
                       >
                         <button
