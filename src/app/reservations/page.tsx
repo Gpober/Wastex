@@ -30,7 +30,7 @@ const BRAND_COLORS = {
 
 // Types
 interface ProductionLog {
-  id: number;
+  id: string;
   year: number;
   month: number;
   log_date: string;
@@ -114,8 +114,7 @@ const WasteXDashboard: React.FC = () => {
 
   const normalizeProductionLogs = (logs: SupabaseProductionLog[]): ProductionLog[] => {
     return logs.map((log) => {
-      const idValue = Number(log.id ?? 0);
-      const id = Number.isFinite(idValue) ? idValue : 0;
+      const id = log.id ? String(log.id) : `${log.log_date ?? "unknown"}-${log.client_name ?? "client"}`;
       const logDateRaw = log.log_date ?? null;
       const parsedDate = logDateRaw ? new Date(logDateRaw) : null;
 
@@ -187,7 +186,7 @@ const WasteXDashboard: React.FC = () => {
       // Fallback to demo data
       setProductionLogs([
         {
-          id: 1,
+          id: '1',
           year: 2025,
           month: 9,
           log_date: '2025-09-26',
@@ -205,7 +204,7 @@ const WasteXDashboard: React.FC = () => {
           created_at: '2025-09-27T07:42:00Z'
         },
         {
-          id: 2,
+          id: '2',
           year: 2025,
           month: 9,
           log_date: '2025-09-25',
@@ -223,7 +222,7 @@ const WasteXDashboard: React.FC = () => {
           created_at: '2025-09-27T07:34:00Z'
         },
         {
-          id: 3,
+          id: '3',
           year: 2025,
           month: 9,
           log_date: '2025-09-24',
@@ -241,7 +240,7 @@ const WasteXDashboard: React.FC = () => {
           created_at: '2025-09-27T07:34:00Z'
         },
         {
-          id: 4,
+          id: '4',
           year: 2025,
           month: 9,
           log_date: '2025-09-23',
