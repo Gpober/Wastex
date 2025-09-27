@@ -6,6 +6,7 @@ import {
   useMemo,
   useCallback,
   useRef,
+  type ChangeEvent,
 } from "react";
 import {
   Menu,
@@ -19,6 +20,14 @@ import {
   Mic,
   Bot,
   MessageCircle,
+  Factory,
+  PlusCircle,
+  Camera,
+  Image as ImageIcon,
+  RefreshCcw,
+  Loader2,
+  Calendar,
+  DollarSign,
   type LucideIcon,
 } from "lucide-react";
 
@@ -171,6 +180,8 @@ type RankingMetric =
   | "payrollDept"
   | "payrollEmployee";
 
+type ReportType = "pl" | "cf" | "ar" | "ap" | "payroll" | "production";
+
 const insights: Insight[] = [
   {
     title: "Revenue trending up",
@@ -192,11 +203,157 @@ const insights: Insight[] = [
   },
 ];
 
+interface ProductionPhoto {
+  base64: string;
+  hash: string;
+  fileName: string;
+  mimeType: string;
+}
+
+interface ProductionEntry {
+  id: string;
+  log_date: string;
+  tonnage: number;
+  price_per_ton: number;
+  total_amount: number;
+  client_name: string;
+  project_deliverable?: string | null;
+  approval_name?: string | null;
+  file_name?: string | null;
+  file_url?: string | null;
+  photo_hash?: string | null;
+  processing_status?: string | null;
+  created_at?: string;
+  synced?: boolean;
+  photo?: ProductionPhoto | null;
+}
+
+const PRODUCTION_STORAGE_KEY = "wastex-production-entries";
+const PRODUCTION_OFFLINE_KEY = "wastex-production-offline";
+const PRODUCTION_CLIENTS = [
+  "Panzarella Waste",
+  "City of Fort Lauderdale",
+  "Broward County",
+  "Custom",
+];
+
+const getStartOfWeek = (date: Date) => {
+  const day = date.getDay();
+  const diff = (day === 0 ? -6 : 1) - day;
+  const result = new Date(date);
+  result.setDate(date.getDate() + diff);
+  result.setHours(0, 0, 0, 0);
+  return result;
+};
+
+const getEndOfWeek = (date: Date) => {
+  const start = getStartOfWeek(date);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  end.setHours(23, 59, 59, 999);
+  return end;
+};
+
+const formatTonnage = (value: number) =>
+  `${Number(value || 0).toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+  })} tons`;
+
+const getFileExtension = (fileName: string) => {
+  const parts = fileName.split(".");
+  return parts.length > 1 ? parts.pop() || "jpg" : "jpg";
+};
+
+const createFileNameFromHash = (hash: string, originalName: string) => {
+  const ext = getFileExtension(originalName).toLowerCase();
+  return `${hash.slice(0, 8)}-${Date.now()}.${ext}`;
+};
+
+const blobToBase64 = (blob: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("Unable to read image"));
+    reader.readAsDataURL(blob);
+  });
+
+const base64ToBlob = (base64: string, mimeType: string) => {
+  const cleaned = base64.includes(",") ? base64.split(",").pop() || base64 : base64;
+  if (typeof window === "undefined") {
+    const buffer = Buffer.from(cleaned, "base64");
+    return new Blob([buffer], { type: mimeType });
+  }
+  const byteCharacters = atob(cleaned);
+  const byteNumbers = new Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i += 1) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  return new Blob([new Uint8Array(byteNumbers)], { type: mimeType });
+};
+
+const compressImageFile = async (file: File, maxWidth = 1280, quality = 0.7) => {
+  if (typeof window === "undefined") return file;
+  if (file.type === "image/gif") return file;
+  return new Promise<Blob>((resolve, reject) => {
+    const image = new Image();
+    const url = URL.createObjectURL(file);
+    image.onload = () => {
+      const scale = Math.min(1, maxWidth / image.width);
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width * scale;
+      canvas.height = image.height * scale;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        URL.revokeObjectURL(url);
+        resolve(file);
+        return;
+      }
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(
+        (blob) => {
+          URL.revokeObjectURL(url);
+          if (blob) resolve(blob);
+          else resolve(file);
+        },
+        file.type === "image/png" ? "image/png" : "image/jpeg",
+        quality,
+      );
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Failed to compress image"));
+    };
+    image.src = url;
+  });
+};
+
+const hashBase64 = async (base64: string) => {
+  const cleaned = base64.includes(",") ? base64.split(",").pop() || base64 : base64;
+  let buffer: ArrayBuffer;
+  if (typeof window === "undefined") {
+    const nodeBuffer = Buffer.from(cleaned, "base64");
+    buffer = nodeBuffer.buffer.slice(
+      nodeBuffer.byteOffset,
+      nodeBuffer.byteOffset + nodeBuffer.byteLength,
+    );
+  } else {
+    const binary = atob(cleaned);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    buffer = bytes.buffer;
+  }
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+};
+
 export default function EnhancedMobileDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [reportType, setReportType] = useState<
-    "pl" | "cf" | "ar" | "ap" | "payroll"
-  >("pl");
+  const [reportType, setReportType] = useState<ReportType>("pl");
   const [reportPeriod, setReportPeriod] = useState<
     "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly"
   >("Monthly");
@@ -241,7 +398,33 @@ export default function EnhancedMobileDashboard() {
   const [showModal, setShowModal] = useState(false);
   const [recognition, setRecognition] = useState<any>(null);
 
+  // Production logging states
+  const [productionEntries, setProductionEntries] = useState<ProductionEntry[]>([]);
+  const [productionModalOpen, setProductionModalOpen] = useState(false);
+  const [productionForm, setProductionForm] = useState({
+    date: new Date().toISOString().split('T')[0],
+    tonnage: '',
+    client: PRODUCTION_CLIENTS[0],
+    customClient: '',
+    pricePerTon: '20',
+    projectNotes: '',
+  });
+  const [productionPhoto, setProductionPhoto] = useState<ProductionPhoto | null>(null);
+  const [productionErrors, setProductionErrors] = useState<Record<string, string>>({});
+  const [productionDuplicateMessage, setProductionDuplicateMessage] = useState<string | null>(null);
+  const [productionSubmitting, setProductionSubmitting] = useState(false);
+  const [productionPhotoLoading, setProductionPhotoLoading] = useState(false);
+  const [isSyncingProduction, setIsSyncingProduction] = useState(false);
+  const [offlineProductionQueue, setOfflineProductionQueue] = useState<ProductionEntry[]>([]);
+  const [showAllProduction, setShowAllProduction] = useState(false);
+
+  useEffect(() => {
+    setView("overview");
+    setSelectedProperty(null);
+  }, [reportType]);
+
   const buttonRef = useRef<HTMLDivElement>(null);
+  const productionPhotoInputRef = useRef<HTMLInputElement>(null);
 
   // Initialize speech recognition
   useEffect(() => {
@@ -385,6 +568,421 @@ export default function EnhancedMobileDashboard() {
     setResponse('');
   };
 
+  const persistProductionState = useCallback(
+    (entries: ProductionEntry[], offline: ProductionEntry[]) => {
+      if (typeof window === 'undefined') return;
+      try {
+        localStorage.setItem(PRODUCTION_STORAGE_KEY, JSON.stringify(entries));
+        localStorage.setItem(PRODUCTION_OFFLINE_KEY, JSON.stringify(offline));
+      } catch (error) {
+        console.error('Failed to persist production data', error);
+      }
+    },
+    [],
+  );
+
+  const mergeProductionEntries = useCallback(
+    (remote: ProductionEntry[], offline: ProductionEntry[]) => {
+      const keyFor = (entry: ProductionEntry) =>
+        entry.id || `${entry.log_date}-${entry.client_name}-${entry.total_amount}-${entry.photo_hash || ''}`;
+      const map = new Map<string, ProductionEntry>();
+      remote.forEach((entry) => {
+        map.set(keyFor(entry), { ...entry, synced: true, photo: null });
+      });
+      offline.forEach((entry) => {
+        map.set(keyFor(entry), { ...entry, synced: entry.synced ?? false });
+      });
+      return Array.from(map.values());
+    },
+    [],
+  );
+
+  const uploadProductionEntry = useCallback(
+    async (entry: ProductionEntry) => {
+      let duplicate = false;
+      const payload: any = {
+        log_date: entry.log_date,
+        tonnage: entry.tonnage,
+        price_per_ton: entry.price_per_ton,
+        total_amount: entry.total_amount,
+        client_name: entry.client_name,
+        project_deliverable: entry.project_deliverable || null,
+        approval_name: entry.approval_name || null,
+        file_name: entry.file_name || null,
+        file_url: entry.file_url || null,
+        photo_hash: entry.photo_hash || entry.photo?.hash || null,
+        processing_status: 'Mobile Entry',
+      };
+
+      if (entry.photo && entry.photo.base64) {
+        const hash = entry.photo.hash || (await hashBase64(entry.photo.base64));
+        payload.photo_hash = hash;
+        let fileUrl = entry.file_url || null;
+        let fileName = entry.file_name || null;
+
+        const { data: duplicateData, error: duplicateError } = await supabase
+          .from('wastex_production_logs')
+          .select('file_url, file_name')
+          .eq('photo_hash', hash)
+          .limit(1);
+
+        if (!duplicateError && duplicateData && duplicateData.length > 0) {
+          duplicate = true;
+          fileUrl = duplicateData[0].file_url;
+          fileName = duplicateData[0].file_name;
+        } else {
+          const filePath = createFileNameFromHash(hash, entry.photo.fileName);
+          const fileBlob = base64ToBlob(entry.photo.base64, entry.photo.mimeType);
+          const uploadResult = await supabase.storage
+            .from('production-photos')
+            .upload(filePath, fileBlob, {
+              contentType: entry.photo.mimeType,
+              upsert: false,
+            });
+
+          if (uploadResult.error) {
+            throw uploadResult.error;
+          }
+
+          const publicUrl = supabase.storage
+            .from('production-photos')
+            .getPublicUrl(filePath);
+          fileUrl = publicUrl.data.publicUrl;
+          fileName = filePath;
+        }
+
+        payload.file_url = fileUrl;
+        payload.file_name = fileName;
+      }
+
+      const { data, error } = await supabase
+        .from('wastex_production_logs')
+        .insert(payload)
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      const savedEntry: ProductionEntry = {
+        id: data?.id?.toString?.() || entry.id,
+        log_date: data?.log_date || entry.log_date,
+        tonnage: Number(data?.tonnage ?? entry.tonnage) || 0,
+        price_per_ton: Number(data?.price_per_ton ?? entry.price_per_ton) || 0,
+        total_amount: Number(data?.total_amount ?? entry.total_amount) || 0,
+        client_name: data?.client_name || entry.client_name,
+        project_deliverable: data?.project_deliverable || entry.project_deliverable || null,
+        approval_name: data?.approval_name || entry.approval_name || null,
+        file_name: data?.file_name || payload.file_name || null,
+        file_url: data?.file_url || payload.file_url || null,
+        photo_hash: data?.photo_hash || payload.photo_hash || null,
+        processing_status: data?.processing_status || 'Mobile Entry',
+        created_at: data?.created_at || data?.inserted_at || new Date().toISOString(),
+        synced: true,
+        photo: null,
+      };
+
+      return { savedEntry, duplicate };
+    },
+    [],
+  );
+
+  const loadProductionEntries = useCallback(async () => {
+    if (typeof window === 'undefined') return;
+
+    let cachedEntries: ProductionEntry[] = [];
+    let offlineEntries: ProductionEntry[] = [];
+
+    try {
+      const stored = localStorage.getItem(PRODUCTION_STORAGE_KEY);
+      cachedEntries = stored ? JSON.parse(stored) : [];
+    } catch (error) {
+      console.error('Failed to parse cached production entries', error);
+    }
+
+    try {
+      const storedOffline = localStorage.getItem(PRODUCTION_OFFLINE_KEY);
+      offlineEntries = storedOffline ? JSON.parse(storedOffline) : [];
+    } catch (error) {
+      console.error('Failed to parse offline production queue', error);
+    }
+
+    setOfflineProductionQueue(offlineEntries);
+
+    if (cachedEntries.length || offlineEntries.length) {
+      setProductionEntries(mergeProductionEntries(cachedEntries, offlineEntries));
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('wastex_production_logs')
+        .select('*')
+        .order('log_date', { ascending: false })
+        .limit(200);
+
+      if (error) {
+        throw error;
+      }
+
+      const remoteEntries: ProductionEntry[] = ((data as any[]) || []).map((record) => ({
+        id: record.id?.toString?.() || `${record.log_date}-${record.client_name}-${record.total_amount}`,
+        log_date: record.log_date,
+        tonnage: Number(record.tonnage) || 0,
+        price_per_ton: Number(record.price_per_ton) || 0,
+        total_amount: Number(record.total_amount) || 0,
+        client_name: record.client_name || 'Unknown Client',
+        project_deliverable: record.project_deliverable || null,
+        approval_name: record.approval_name || null,
+        file_name: record.file_name || null,
+        file_url: record.file_url || null,
+        photo_hash: record.photo_hash || null,
+        processing_status: record.processing_status || 'Mobile Entry',
+        created_at: record.created_at || record.inserted_at || record.createdAt || `${record.log_date}T00:00:00`,
+        synced: true,
+        photo: null,
+      }));
+
+      const combined = mergeProductionEntries(remoteEntries, offlineEntries);
+      setProductionEntries(combined);
+      persistProductionState(combined, offlineEntries);
+    } catch (error) {
+      console.error('Error loading production entries from Supabase', error);
+    }
+  }, [mergeProductionEntries, persistProductionState]);
+
+  const syncProductionEntries = useCallback(async () => {
+    if (typeof window === 'undefined' || !navigator.onLine) return;
+    if (!offlineProductionQueue.length) return;
+
+    setIsSyncingProduction(true);
+    const remaining: ProductionEntry[] = [];
+    const synced: ProductionEntry[] = [];
+
+    for (const entry of offlineProductionQueue) {
+      try {
+        const { savedEntry } = await uploadProductionEntry(entry);
+        synced.push(savedEntry);
+      } catch (error) {
+        console.error('Failed to sync production entry', error);
+        remaining.push(entry);
+      }
+    }
+
+    const combined = mergeProductionEntries(
+      [
+        ...productionEntries.filter((entry) => entry.synced),
+        ...synced,
+      ],
+      remaining,
+    );
+
+    setOfflineProductionQueue(remaining);
+    setProductionEntries(combined);
+    persistProductionState(combined, remaining);
+    setIsSyncingProduction(false);
+  }, [mergeProductionEntries, offlineProductionQueue, persistProductionState, productionEntries, uploadProductionEntry]);
+
+  useEffect(() => {
+    loadProductionEntries();
+  }, [loadProductionEntries]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      syncProductionEntries();
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', handleOnline);
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnline);
+      }
+    };
+  }, [syncProductionEntries]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!navigator.onLine) return;
+    syncProductionEntries();
+  }, [syncProductionEntries, offlineProductionQueue.length]);
+
+  const resetProductionForm = () => {
+    setProductionForm({
+      date: new Date().toISOString().split('T')[0],
+      tonnage: '',
+      client: PRODUCTION_CLIENTS[0],
+      customClient: '',
+      pricePerTon: '20',
+      projectNotes: '',
+    });
+    setProductionPhoto(null);
+    setProductionErrors({});
+  };
+
+  const handleProductionFieldChange = (field: string, value: string) => {
+    setProductionForm((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+    setProductionErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  };
+
+  const handleProductionPhotoChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setProductionPhotoLoading(true);
+    setProductionDuplicateMessage(null);
+    try {
+      const compressed = await compressImageFile(file);
+      const base64 = await blobToBase64(compressed);
+      const hash = await hashBase64(base64);
+      setProductionPhoto({
+        base64,
+        hash,
+        fileName: file.name,
+        mimeType: compressed.type || file.type || 'image/jpeg',
+      });
+    } catch (error) {
+      console.error('Failed to process production photo', error);
+    } finally {
+      setProductionPhotoLoading(false);
+    }
+  };
+
+  const removeProductionPhoto = () => {
+    setProductionPhoto(null);
+  };
+
+  const triggerProductionPhotoPicker = () => {
+    productionPhotoInputRef.current?.click();
+  };
+
+  const validateProductionForm = () => {
+    const errors: Record<string, string> = {};
+    if (!productionForm.date) {
+      errors.date = 'Date is required';
+    }
+
+    const tonnage = parseFloat(productionForm.tonnage);
+    if (Number.isNaN(tonnage) || tonnage <= 0) {
+      errors.tonnage = 'Tonnage must be greater than 0';
+    }
+
+    const rate = parseFloat(productionForm.pricePerTon);
+    if (Number.isNaN(rate) || rate <= 0) {
+      errors.pricePerTon = 'Price per ton must be positive';
+    }
+
+    let clientName = productionForm.client;
+    if (clientName === 'Custom') {
+      clientName = productionForm.customClient.trim();
+    }
+
+    if (!clientName) {
+      errors.client = 'Client is required';
+    }
+
+    return {
+      errors,
+      tonnage,
+      rate,
+      clientName,
+    };
+  };
+
+  const handleProductionSubmit = async () => {
+    setProductionDuplicateMessage(null);
+    const { errors, tonnage, rate, clientName } = validateProductionForm();
+    if (Object.keys(errors).length) {
+      setProductionErrors(errors);
+      return;
+    }
+
+    setProductionSubmitting(true);
+
+    const baseEntry: ProductionEntry = {
+      id: typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `local-${Date.now()}`,
+      log_date: productionForm.date,
+      tonnage,
+      price_per_ton: rate,
+      total_amount: Number((tonnage * rate).toFixed(2)),
+      client_name: clientName,
+      project_deliverable: productionForm.projectNotes || null,
+      approval_name: null,
+      file_name: productionPhoto?.fileName || null,
+      file_url: null,
+      photo_hash: productionPhoto?.hash || null,
+      processing_status: 'Mobile Entry',
+      created_at: new Date().toISOString(),
+      synced: false,
+      photo: productionPhoto,
+    };
+
+    try {
+      if (typeof window !== 'undefined' && navigator.onLine) {
+        const { savedEntry, duplicate } = await uploadProductionEntry(baseEntry);
+        const remoteEntries = [
+          savedEntry,
+          ...productionEntries.filter((entry) => entry.synced && entry.id !== savedEntry.id),
+        ];
+        const combined = mergeProductionEntries(remoteEntries, offlineProductionQueue);
+        setProductionEntries(combined);
+        persistProductionState(combined, offlineProductionQueue);
+        if (duplicate) {
+          setProductionDuplicateMessage('Duplicate photo detected. Reused previous upload.');
+        }
+      } else {
+        const offlineQueue = [...offlineProductionQueue, baseEntry];
+        setOfflineProductionQueue(offlineQueue);
+        const combined = mergeProductionEntries(productionEntries, offlineQueue);
+        setProductionEntries(combined);
+        persistProductionState(combined, offlineQueue);
+      }
+
+      resetProductionForm();
+      setProductionModalOpen(false);
+    } catch (error) {
+      console.error('Failed to log production entry', error);
+      const offlineQueue = [...offlineProductionQueue, baseEntry];
+      setOfflineProductionQueue(offlineQueue);
+      const combined = mergeProductionEntries(productionEntries, offlineQueue);
+      setProductionEntries(combined);
+      persistProductionState(combined, offlineQueue);
+    } finally {
+      setProductionSubmitting(false);
+    }
+  };
+
+  const openProductionPhoto = (entry: ProductionEntry) => {
+    if (typeof window === 'undefined') return;
+    const source = entry.file_url || entry.photo?.base64;
+    if (!source) return;
+    const viewer = window.open('', '_blank');
+    if (viewer) {
+      viewer.document.title = `Production - ${entry.client_name}`;
+      viewer.document.body.style.margin = '0';
+      viewer.document.body.style.background = '#000';
+      const image = viewer.document.createElement('img');
+      image.src = source;
+      image.style.width = '100%';
+      image.style.height = 'auto';
+      image.style.display = 'block';
+      viewer.document.body.appendChild(image);
+    }
+  };
+
+
   const transactionTotal = useMemo(
     () => transactions.reduce((sum, t) => sum + t.amount, 0),
     [transactions],
@@ -399,6 +997,68 @@ export default function EnhancedMobileDashboard() {
     () => apTransactions.reduce((sum, t) => sum + t.amount, 0),
     [apTransactions],
   );
+
+  const productionCalculatedTotal = useMemo(() => {
+    const tonnage = parseFloat(productionForm.tonnage);
+    const rate = parseFloat(productionForm.pricePerTon);
+    if (Number.isNaN(tonnage) || Number.isNaN(rate)) return 0;
+    return Number((tonnage * rate).toFixed(2));
+  }, [productionForm.tonnage, productionForm.pricePerTon]);
+
+  const sortedProductionEntries = useMemo(() => {
+    const entries = [...productionEntries];
+    return entries.sort((a, b) => {
+      const aDate = new Date(a.created_at || `${a.log_date}T00:00:00`);
+      const bDate = new Date(b.created_at || `${b.log_date}T00:00:00`);
+      return bDate.getTime() - aDate.getTime();
+    });
+  }, [productionEntries]);
+
+  const todaysProduction = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let tonnage = 0;
+    let revenue = 0;
+    sortedProductionEntries.forEach((entry) => {
+      const entryDate = new Date(`${entry.log_date}T00:00:00`);
+      if (entryDate.getTime() === today.getTime()) {
+        tonnage += entry.tonnage || 0;
+        revenue += entry.total_amount || 0;
+      }
+    });
+    return { tonnage, revenue };
+  }, [sortedProductionEntries]);
+
+  const weeklyProduction = useMemo(() => {
+    const now = new Date();
+    const start = getStartOfWeek(now);
+    const end = getEndOfWeek(now);
+    let tonnage = 0;
+    let revenue = 0;
+    sortedProductionEntries.forEach((entry) => {
+      const entryDate = new Date(`${entry.log_date}T00:00:00`);
+      if (entryDate >= start && entryDate <= end) {
+        tonnage += entry.tonnage || 0;
+        revenue += entry.total_amount || 0;
+      }
+    });
+    return { tonnage, revenue };
+  }, [sortedProductionEntries]);
+
+  const recentProductionEntries = useMemo(
+    () => sortedProductionEntries.slice(0, 5),
+    [sortedProductionEntries],
+  );
+
+  const displayedProductionEntries = useMemo(
+    () => (showAllProduction ? sortedProductionEntries : recentProductionEntries),
+    [recentProductionEntries, showAllProduction, sortedProductionEntries],
+  );
+
+  const plannedProductionTonnage = useMemo(() => {
+    const tonnage = parseFloat(productionForm.tonnage);
+    return Number.isNaN(tonnage) ? 0 : tonnage;
+  }, [productionForm.tonnage]);
 
   const filteredARTransactions = useMemo(() => {
     return arTransactions.filter((t) => {
@@ -554,6 +1214,11 @@ export default function EnhancedMobileDashboard() {
 
   useEffect(() => {
     const load = async () => {
+      if (reportType === "production") {
+        setProperties([]);
+        setEmployeeTotals([]);
+        return;
+      }
       if (reportType === "ap") {
         const { data } = await supabase
           .from("ap_aging")
@@ -901,6 +1566,14 @@ export default function EnhancedMobileDashboard() {
       style: "currency",
       currency: "USD",
       maximumFractionDigits: 0,
+    }).format(n);
+
+  const formatCurrencyWithCents = (n: number) =>
+    new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
     }).format(n);
 
   const formatCompactCurrency = (n: number) => {
@@ -1375,6 +2048,10 @@ export default function EnhancedMobileDashboard() {
           0% { transform: scale(0.8); opacity: 1; }
           100% { transform: scale(2.4); opacity: 0; }
         }
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
       `}</style>
 
       {/* Enhanced Header */}
@@ -1417,13 +2094,16 @@ export default function EnhancedMobileDashboard() {
               ? "Cash Flow Dashboard"
               : reportType === "payroll"
               ? "Payroll Dashboard"
+              : reportType === "production"
+              ? "Production Dashboard"
               : reportType === "ap"
               ? "A/P Aging Report"
               : "A/R Aging Report"}
           </h1>
           <p style={{ fontSize: '14px', opacity: 0.9 }}>
-            {reportType === "ar" || reportType === "ap" ? "As of Today" : `${getMonthName(month)} ${year}`} • {properties.length}{" "}
-            {reportType === "payroll" ? "Departments" : reportType === "ap" ? "Vendors" : "Customers"}
+            {reportType === "production"
+              ? `${new Date().toLocaleDateString()} • ${sortedProductionEntries.length} Logs`
+              : `${reportType === "ar" || reportType === "ap" ? "As of Today" : `${getMonthName(month)} ${year}`} • ${properties.length} ${reportType === "payroll" ? "Departments" : reportType === "ap" ? "Vendors" : "Customers"}`}
           </p>
         </div>
 
@@ -1449,13 +2129,44 @@ export default function EnhancedMobileDashboard() {
           }}
         >
           <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-            <span style={{ fontSize: '14px', opacity: 0.9 }}>Company Total</span>
+            <span style={{ fontSize: '14px', opacity: 0.9 }}>
+              {reportType === "production" ? "Today's Tonnage" : "Company Total"}
+            </span>
             <div style={{ fontSize: '32px', fontWeight: 'bold', margin: '8px 0' }}>
-              {formatCompactCurrency(companyTotals.net)}
+              {reportType === "production"
+                ? formatTonnage(todaysProduction.tonnage)
+                : formatCompactCurrency(companyTotals.net)}
             </div>
           </div>
-          
-          {reportType === "pl" ? (
+
+          {reportType === "production" ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', textAlign: 'center' }}>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatTonnage(todaysProduction.tonnage)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Today's Output</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatCurrencyWithCents(todaysProduction.revenue)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Today's Revenue</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatTonnage(weeklyProduction.tonnage)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Week-to-Date Output</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatCurrencyWithCents(weeklyProduction.revenue)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Week-to-Date Revenue</div>
+              </div>
+            </div>
+          ) : reportType === "pl" ? (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', textAlign: 'center' }}>
               <div>
                 <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
@@ -1585,18 +2296,19 @@ export default function EnhancedMobileDashboard() {
               value={reportType}
               onChange={(e) =>
                 setReportType(
-                  e.target.value as "pl" | "cf" | "ar" | "ap" | "payroll",
+                  e.target.value as ReportType,
                 )
               }
             >
               <option value="pl">P&L Statement</option>
               <option value="cf">Cash Flow Statement</option>
               <option value="payroll">Payroll</option>
+              <option value="production">Production</option>
               <option value="ar">A/R Aging Report</option>
               <option value="ap">A/P Aging Report</option>
             </select>
           </div>
-          {reportType !== "ar" && reportType !== "ap" && (
+          {reportType !== "ar" && reportType !== "ap" && reportType !== "production" && (
             <>
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: BRAND_COLORS.accent }}>
@@ -1713,8 +2425,335 @@ export default function EnhancedMobileDashboard() {
 
       {view === "overview" && (
         <div>
-          {/* Portfolio Insights */}
+          {reportType === "production" ? (
+            <>
+              {/* Production Summary */}
+              <div style={{
+            background: 'white',
+            borderRadius: '16px',
+            padding: '20px',
+            marginBottom: '24px',
+            border: `1px solid ${BRAND_COLORS.gray[200]}`,
+            boxShadow: '0 4px 20px rgba(86, 182, 233, 0.1)'
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '12px',
+              marginBottom: '16px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '48px',
+                  height: '48px',
+                  borderRadius: '14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: `linear-gradient(135deg, ${BRAND_COLORS.primary}, ${BRAND_COLORS.secondary})`,
+                  color: 'white',
+                  boxShadow: `0 10px 24px ${BRAND_COLORS.primary}33`
+                }}>
+                  <Factory size={22} />
+                </div>
+                <div>
+                  <div style={{ fontSize: '18px', fontWeight: '600', color: BRAND_COLORS.accent }}>Production</div>
+                  <div style={{ fontSize: '12px', color: '#64748b' }}>Monitor daily output & revenue</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  resetProductionForm();
+                  setProductionModalOpen(true);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  background: `linear-gradient(135deg, ${BRAND_COLORS.primary}, ${BRAND_COLORS.secondary})`,
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '10px',
+                  padding: '10px 16px',
+                  fontWeight: 600,
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  boxShadow: `0 8px 18px ${BRAND_COLORS.primary}2b`
+                }}
+              >
+                <PlusCircle size={18} />
+                Log Production
+              </button>
+            </div>
+
+            <div style={{
+              display: 'grid',
+              gap: '16px',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              marginBottom: '16px'
+            }}>
+              <div style={{
+                borderRadius: '12px',
+                border: `1px solid ${BRAND_COLORS.primary}22`,
+                padding: '16px',
+                background: `linear-gradient(135deg, ${BRAND_COLORS.gray[50]}, #f1f9ff)`
+              }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: BRAND_COLORS.primary,
+                  marginBottom: '8px'
+                }}>
+                  <Calendar size={14} />
+                  Today
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: 700, color: BRAND_COLORS.accent, marginBottom: '4px' }}>
+                  {formatTonnage(todaysProduction.tonnage)}
+                </div>
+                <div style={{ fontSize: '14px', color: '#475569' }}>
+                  {formatCurrencyWithCents(todaysProduction.revenue)}
+                </div>
+              </div>
+              <div style={{
+                borderRadius: '12px',
+                border: `1px solid ${BRAND_COLORS.secondary}22`,
+                padding: '16px',
+                background: `linear-gradient(135deg, ${BRAND_COLORS.gray[50]}, #eef7ff)`
+              }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: BRAND_COLORS.secondary,
+                  marginBottom: '8px'
+                }}>
+                  <Calendar size={14} />
+                  This Week
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: 700, color: BRAND_COLORS.secondary, marginBottom: '4px' }}>
+                  {formatTonnage(weeklyProduction.tonnage)}
+                </div>
+                <div style={{ fontSize: '14px', color: '#475569' }}>
+                  {formatCurrencyWithCents(weeklyProduction.revenue)}
+                </div>
+              </div>
+              <div style={{
+                borderRadius: '12px',
+                border: `1px solid ${BRAND_COLORS.success}22`,
+                padding: '16px',
+                background: `linear-gradient(135deg, ${BRAND_COLORS.gray[50]}, #f3fff6)`
+              }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: BRAND_COLORS.success,
+                  marginBottom: '8px'
+                }}>
+                  <DollarSign size={14} />
+                  New Log Preview
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: 700, color: BRAND_COLORS.success, marginBottom: '4px' }}>
+                  {formatCurrencyWithCents(productionCalculatedTotal)}
+                </div>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>
+                  {plannedProductionTonnage > 0
+                    ? `${plannedProductionTonnage.toFixed(1)} tons ready to log`
+                    : 'Set tonnage to preview totals'}
+                </div>
+              </div>
+            </div>
+
+            {productionDuplicateMessage && (
+              <div style={{
+                background: `${BRAND_COLORS.primary}12`,
+                border: `1px solid ${BRAND_COLORS.primary}33`,
+                color: BRAND_COLORS.primary,
+                borderRadius: '12px',
+                padding: '12px',
+                fontSize: '12px',
+                marginBottom: offlineProductionQueue.length ? '12px' : '0'
+              }}>
+                {productionDuplicateMessage}
+              </div>
+            )}
+
+            {offlineProductionQueue.length > 0 && (
+              <div style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                padding: '14px',
+                borderRadius: '12px',
+                border: `1px dashed ${BRAND_COLORS.warning}`,
+                background: `${BRAND_COLORS.warning}12`
+              }}>
+                <div style={{ fontSize: '12px', fontWeight: 600, color: BRAND_COLORS.warning }}>
+                  {offlineProductionQueue.length} offline entr{offlineProductionQueue.length === 1 ? 'y' : 'ies'} waiting to sync
+                </div>
+                <button
+                  type="button"
+                  onClick={syncProductionEntries}
+                  disabled={isSyncingProduction}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: `linear-gradient(135deg, ${BRAND_COLORS.warning}, #f59e0b)`,
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '10px',
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: isSyncingProduction ? 'not-allowed' : 'pointer',
+                    opacity: isSyncingProduction ? 0.75 : 1
+                  }}
+                >
+                  {isSyncingProduction ? (
+                    <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                  ) : (
+                    <RefreshCcw size={16} />
+                  )}
+                  {isSyncingProduction ? 'Syncing' : 'Sync Now'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Recent Production */}
           <div style={{
+            background: 'white',
+            borderRadius: '16px',
+            padding: '20px',
+            marginBottom: '24px',
+            border: `1px solid ${BRAND_COLORS.gray[200]}`,
+            boxShadow: '0 4px 20px rgba(86, 182, 233, 0.08)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '18px', fontWeight: 600, color: BRAND_COLORS.accent }}>Recent Production</h3>
+              <button
+                type="button"
+                onClick={() => setShowAllProduction((prev) => !prev)}
+                style={{
+                  background: 'transparent',
+                  border: `1px solid ${BRAND_COLORS.primary}44`,
+                  color: BRAND_COLORS.primary,
+                  borderRadius: '10px',
+                  padding: '8px 12px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                {showAllProduction ? 'Show Recent' : 'View All'}
+              </button>
+            </div>
+
+            {displayedProductionEntries.length === 0 ? (
+              <div style={{
+                padding: '24px',
+                textAlign: 'center',
+                borderRadius: '12px',
+                border: `1px dashed ${BRAND_COLORS.gray[200]}`,
+                color: '#94a3b8',
+                fontSize: '13px'
+              }}>
+                No production entries logged yet. Tap "Log Production" to get started.
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '12px' }}>
+                {displayedProductionEntries.map((entry) => (
+                  <div
+                    key={`${entry.id}-${entry.created_at}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '12px',
+                      padding: '12px 14px',
+                      borderRadius: '12px',
+                      border: `1px solid ${entry.synced ? BRAND_COLORS.gray[200] : BRAND_COLORS.warning}55`,
+                      background: entry.synced ? `${BRAND_COLORS.gray[50]}` : `${BRAND_COLORS.warning}08`
+                    }}
+                  >
+                    <div style={{ display: 'grid', gap: '4px' }}>
+                      <div style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>
+                        {new Date(`${entry.log_date}T00:00:00`).toLocaleDateString()}
+                      </div>
+                      <div style={{ fontSize: '14px', fontWeight: 600, color: BRAND_COLORS.accent }}>
+                        {formatTonnage(entry.tonnage)}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#64748b' }}>{entry.client_name}</div>
+                      {!entry.synced && (
+                        <span style={{ fontSize: '11px', fontWeight: 600, color: BRAND_COLORS.warning }}>Pending Sync</span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Amount</div>
+                        <div style={{ fontSize: '16px', fontWeight: 700, color: BRAND_COLORS.accent }}>
+                          {formatCurrencyWithCents(entry.total_amount)}
+                        </div>
+                      </div>
+                      {(entry.file_url || entry.photo?.base64) ? (
+                        <button
+                          type="button"
+                          onClick={() => openProductionPhoto(entry)}
+                          style={{
+                            width: '56px',
+                            height: '56px',
+                            borderRadius: '12px',
+                            overflow: 'hidden',
+                            border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                            padding: 0,
+                            background: '#fff',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          <img
+                            src={entry.file_url || entry.photo?.base64 || ''}
+                            alt={`${entry.client_name} production`}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          />
+                        </button>
+                      ) : (
+                        <div style={{
+                          width: '56px',
+                          height: '56px',
+                          borderRadius: '12px',
+                          border: `1px dashed ${BRAND_COLORS.gray[200]}`,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#94a3b8'
+                        }}>
+                          <ImageIcon size={20} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+            </>
+          ) : (
+            <>
+              {/* Portfolio Insights */}
+              <div style={{
             background: 'white',
             borderRadius: '16px',
             padding: '20px',
@@ -2605,7 +3644,7 @@ export default function EnhancedMobileDashboard() {
                 color: BRAND_COLORS.accent
               }}
             >
-              Company Total {reportType === "pl" ? "Net Income" : reportType === "cf" ? "Net Cash" : reportType === "payroll" ? "Payroll" : reportType === "ap" ? "A/P" : "A/R"}
+              Company Total {reportType === "pl" ? "Net Income" : reportType === "cf" ? "Net Cash" : reportType === "payroll" ? "Payroll" : reportType === "production" ? "Production" : reportType === "ap" ? "A/P" : "A/R"}
             </span>
             <div
               style={{
@@ -2618,6 +3657,8 @@ export default function EnhancedMobileDashboard() {
               {formatCompactCurrency(companyTotals.net)}
             </div>
           </div>
+            </>
+          )}
         </div>
       )}
 
@@ -2714,7 +3755,7 @@ export default function EnhancedMobileDashboard() {
             color: 'white'
           }}>
             <h2 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '8px' }}>
-              {selectedProperty || "Company Total"} - {reportType === "pl" ? "P&L Statement" : reportType === "cf" ? "Cash Flow Statement" : reportType === "payroll" ? "Payroll Statement" : reportType === "ap" ? "A/P Aging" : "A/R Aging"}
+              {selectedProperty || "Company Total"} - {reportType === "pl" ? "P&L Statement" : reportType === "cf" ? "Cash Flow Statement" : reportType === "payroll" ? "Payroll Statement" : reportType === "production" ? "Production Overview" : reportType === "ap" ? "A/P Aging" : "A/R Aging"}
             </h2>
             <p style={{ fontSize: '14px', opacity: 0.9 }}>
               {reportType === "ar" || reportType === "ap" ? "As of Today" : `${getMonthName(month)} ${year}`}
@@ -3165,7 +4206,7 @@ export default function EnhancedMobileDashboard() {
             }}
           >
             <ChevronLeft size={20} style={{ marginRight: '4px' }} />
-            Back to {reportType === "pl" ? "P&L" : reportType === "cf" ? "Cash Flow" : reportType === "payroll" ? "Payroll" : reportType === "ap" ? "A/P" : "A/R"}
+            Back to {reportType === "pl" ? "P&L" : reportType === "cf" ? "Cash Flow" : reportType === "payroll" ? "Payroll" : reportType === "production" ? "Production" : reportType === "ap" ? "A/P" : "A/R"}
           </button>
 
           {reportType === "ar" ? (
@@ -3703,6 +4744,378 @@ export default function EnhancedMobileDashboard() {
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {productionModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.55)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px',
+            zIndex: 1200,
+          }}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setProductionModalOpen(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: '480px',
+              background: 'white',
+              borderRadius: '16px',
+              padding: '24px',
+              position: 'relative',
+              boxShadow: '0 24px 60px rgba(15, 23, 42, 0.25)',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setProductionModalOpen(false)}
+              style={{
+                position: 'absolute',
+                top: '16px',
+                right: '16px',
+                background: 'transparent',
+                border: 'none',
+                color: '#94a3b8',
+                fontSize: '20px',
+                cursor: 'pointer',
+              }}
+            >
+              <X size={20} />
+            </button>
+            <h3 style={{ fontSize: '20px', fontWeight: 600, color: BRAND_COLORS.accent, marginBottom: '4px' }}>
+              Log Production
+            </h3>
+            <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '20px' }}>
+              Capture daily production tonnage, revenue, and supporting media.
+            </p>
+
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                handleProductionSubmit();
+              }}
+              style={{ display: 'grid', gap: '16px' }}
+            >
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#475569', marginBottom: '6px' }}>
+                  Date
+                </label>
+                <input
+                  type="date"
+                  value={productionForm.date}
+                  onChange={(event) => handleProductionFieldChange('date', event.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: `1px solid ${productionErrors.date ? BRAND_COLORS.danger : BRAND_COLORS.gray[200]}`,
+                    fontSize: '14px',
+                  }}
+                />
+                {productionErrors.date && (
+                  <div style={{ color: BRAND_COLORS.danger, fontSize: '12px', marginTop: '4px' }}>
+                    {productionErrors.date}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#475569', marginBottom: '6px' }}>
+                    Tonnage (tons)
+                  </label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="0.1"
+                    value={productionForm.tonnage}
+                    onChange={(event) => handleProductionFieldChange('tonnage', event.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: '10px',
+                      border: `1px solid ${productionErrors.tonnage ? BRAND_COLORS.danger : BRAND_COLORS.gray[200]}`,
+                      fontSize: '14px',
+                    }}
+                  />
+                  {productionErrors.tonnage && (
+                    <div style={{ color: BRAND_COLORS.danger, fontSize: '12px', marginTop: '4px' }}>
+                      {productionErrors.tonnage}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#475569', marginBottom: '6px' }}>
+                    Price per Ton ($)
+                  </label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="0.01"
+                    value={productionForm.pricePerTon}
+                    onChange={(event) => handleProductionFieldChange('pricePerTon', event.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: '10px',
+                      border: `1px solid ${productionErrors.pricePerTon ? BRAND_COLORS.danger : BRAND_COLORS.gray[200]}`,
+                      fontSize: '14px',
+                    }}
+                  />
+                  {productionErrors.pricePerTon && (
+                    <div style={{ color: BRAND_COLORS.danger, fontSize: '12px', marginTop: '4px' }}>
+                      {productionErrors.pricePerTon}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#475569', marginBottom: '6px' }}>
+                  Client
+                </label>
+                <select
+                  value={productionForm.client}
+                  onChange={(event) => handleProductionFieldChange('client', event.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: `1px solid ${productionErrors.client ? BRAND_COLORS.danger : BRAND_COLORS.gray[200]}`,
+                    fontSize: '14px',
+                    background: 'white',
+                  }}
+                >
+                  {PRODUCTION_CLIENTS.map((client) => (
+                    <option key={client} value={client}>
+                      {client}
+                    </option>
+                  ))}
+                </select>
+                {productionForm.client === 'Custom' && (
+                  <input
+                    type="text"
+                    placeholder="Enter client name"
+                    value={productionForm.customClient}
+                    onChange={(event) => handleProductionFieldChange('customClient', event.target.value)}
+                    style={{
+                      width: '100%',
+                      marginTop: '8px',
+                      padding: '12px',
+                      borderRadius: '10px',
+                      border: `1px solid ${productionErrors.client ? BRAND_COLORS.danger : BRAND_COLORS.gray[200]}`,
+                      fontSize: '14px',
+                    }}
+                  />
+                )}
+                {productionErrors.client && (
+                  <div style={{ color: BRAND_COLORS.danger, fontSize: '12px', marginTop: '4px' }}>
+                    {productionErrors.client}
+                  </div>
+                )}
+              </div>
+
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                gap: '12px',
+                alignItems: 'center',
+              }}>
+                <div>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: '#475569', display: 'block', marginBottom: '6px' }}>
+                    Total Amount
+                  </span>
+                  <div style={{
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    background: `${BRAND_COLORS.gray[50]}`,
+                    fontWeight: 600,
+                    fontSize: '16px',
+                    color: BRAND_COLORS.accent,
+                  }}>
+                    {formatCurrencyWithCents(productionCalculatedTotal)}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: '#475569', display: 'block', marginBottom: '6px' }}>
+                    Project / Notes
+                  </span>
+                  <textarea
+                    rows={3}
+                    placeholder="Optional project or delivery notes"
+                    value={productionForm.projectNotes}
+                    onChange={(event) => handleProductionFieldChange('projectNotes', event.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: '10px',
+                      border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                      fontSize: '14px',
+                      resize: 'vertical',
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: '#475569', display: 'block', marginBottom: '8px' }}>
+                  Photo Evidence
+                </span>
+                <div style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '12px',
+                  alignItems: 'center',
+                }}>
+                  <button
+                    type="button"
+                    onClick={triggerProductionPhotoPicker}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 14px',
+                      borderRadius: '10px',
+                      border: `1px dashed ${BRAND_COLORS.primary}`,
+                      background: `${BRAND_COLORS.primary}10`,
+                      color: BRAND_COLORS.primary,
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Camera size={18} />
+                    {productionPhoto ? 'Retake Photo' : 'Add Photo'}
+                  </button>
+                  <input
+                    ref={productionPhotoInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    style={{ display: 'none' }}
+                    onChange={handleProductionPhotoChange}
+                  />
+                  {productionPhotoLoading && (
+                    <span style={{ fontSize: '12px', color: '#64748b' }}>Processing photo...</span>
+                  )}
+                </div>
+                {productionPhoto && (
+                  <div style={{
+                    marginTop: '12px',
+                    display: 'flex',
+                    gap: '12px',
+                    alignItems: 'center',
+                  }}>
+                    <img
+                      src={productionPhoto.base64}
+                      alt="Production preview"
+                      style={{
+                        width: '96px',
+                        height: '96px',
+                        objectFit: 'cover',
+                        borderRadius: '12px',
+                        border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                      }}
+                    />
+                    <div style={{ display: 'grid', gap: '8px' }}>
+                      <button
+                        type="button"
+                        onClick={triggerProductionPhotoPicker}
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: `1px solid ${BRAND_COLORS.primary}55`,
+                          background: 'white',
+                          color: BRAND_COLORS.primary,
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Change Photo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={removeProductionPhoto}
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: `1px solid ${BRAND_COLORS.danger}44`,
+                          background: `${BRAND_COLORS.danger}08`,
+                          color: BRAND_COLORS.danger,
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <button
+                  type="submit"
+                  disabled={productionSubmitting}
+                  style={{
+                    width: '100%',
+                    padding: '14px',
+                    borderRadius: '12px',
+                    border: 'none',
+                    background: `linear-gradient(135deg, ${BRAND_COLORS.primary}, ${BRAND_COLORS.secondary})`,
+                    color: 'white',
+                    fontSize: '16px',
+                    fontWeight: 600,
+                    cursor: productionSubmitting ? 'not-allowed' : 'pointer',
+                    opacity: productionSubmitting ? 0.75 : 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  {productionSubmitting && (
+                    <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
+                  )}
+                  {productionSubmitting ? 'Saving Entry' : 'Save Production Log'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProductionModalOpen(false)}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '12px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    background: 'white',
+                    color: '#475569',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
