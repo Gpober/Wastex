@@ -35,14 +35,15 @@ import {
   endOfMonth,
   endOfQuarter,
   endOfWeek,
+  endOfYear,
   format,
+  getQuarter,
   isSameDay,
   isWithinInterval,
   parseISO,
   startOfMonth,
   startOfQuarter,
   startOfWeek,
-  startOfYear,
   subMonths,
 } from "date-fns";
 
@@ -180,36 +181,78 @@ const normalizeDate = (date: Date) =>
 
 const getProductionPeriodRange = (
   period: ProductionPeriod,
-  customStart?: string,
-  customEnd?: string,
+  options: {
+    customStart?: string;
+    customEnd?: string;
+    dailyDate?: string;
+    weeklyDate?: string;
+    monthlyMonth?: number;
+    monthlyYear?: number;
+    quarter?: number;
+    quarterYear?: number;
+    ytdYear?: number;
+    trailingMonth?: number;
+    trailingYear?: number;
+  } = {},
 ): { start: Date; end: Date } | null => {
   const today = normalizeDate(new Date());
+  const {
+    customStart,
+    customEnd,
+    dailyDate,
+    weeklyDate,
+    monthlyMonth,
+    monthlyYear,
+    quarter,
+    quarterYear,
+    ytdYear,
+    trailingMonth,
+    trailingYear,
+  } = options;
 
   switch (period) {
-    case "Daily":
-      return { start: today, end: today };
+    case "Daily": {
+      const target = dailyDate ? normalizeDate(parseDateValue(dailyDate)) : today;
+      return { start: target, end: target };
+    }
     case "Weekly": {
-      const start = normalizeDate(startOfWeek(today, { weekStartsOn: 1 }));
-      const end = normalizeDate(endOfWeek(today, { weekStartsOn: 1 }));
+      const anchor = weeklyDate ? normalizeDate(parseDateValue(weeklyDate)) : today;
+      const start = normalizeDate(startOfWeek(anchor, { weekStartsOn: 1 }));
+      const end = normalizeDate(endOfWeek(anchor, { weekStartsOn: 1 }));
       return { start, end };
     }
     case "Monthly": {
-      const start = normalizeDate(startOfMonth(today));
-      const end = normalizeDate(endOfMonth(today));
+      const month = typeof monthlyMonth === "number" ? monthlyMonth : today.getMonth();
+      const year = typeof monthlyYear === "number" ? monthlyYear : today.getFullYear();
+      const anchor = new Date(year, month, 1);
+      const start = normalizeDate(startOfMonth(anchor));
+      const end = normalizeDate(endOfMonth(anchor));
       return { start, end };
     }
     case "Year to Date": {
-      const start = normalizeDate(startOfYear(today));
-      return { start, end: today };
+      const currentYear = today.getFullYear();
+      const year = typeof ytdYear === "number" ? ytdYear : currentYear;
+      const start = normalizeDate(new Date(year, 0, 1));
+      const end =
+        year === currentYear
+          ? today
+          : normalizeDate(endOfYear(new Date(year, 0, 1)));
+      return { start, end };
     }
     case "Trailing 12 Months": {
-      const end = today;
+      const month = typeof trailingMonth === "number" ? trailingMonth : today.getMonth();
+      const year = typeof trailingYear === "number" ? trailingYear : today.getFullYear();
+      const anchor = new Date(year, month, 1);
+      const end = normalizeDate(endOfMonth(anchor));
       const start = normalizeDate(startOfMonth(subMonths(end, 11)));
       return { start, end };
     }
     case "Quarterly": {
-      const start = normalizeDate(startOfQuarter(today));
-      const end = normalizeDate(endOfQuarter(today));
+      const baseQuarter = quarter ?? getQuarter(today);
+      const year = typeof quarterYear === "number" ? quarterYear : today.getFullYear();
+      const anchor = new Date(year, (baseQuarter - 1) * 3, 1);
+      const start = normalizeDate(startOfQuarter(anchor));
+      const end = normalizeDate(endOfQuarter(anchor));
       return { start, end };
     }
     case "Custom": {
@@ -321,6 +364,23 @@ const PRODUCTION_PERIOD_OPTIONS: ProductionPeriod[] = [
   "Custom",
 ];
 
+const PRODUCTION_MONTH_OPTIONS = [
+  { value: 0, label: "January" },
+  { value: 1, label: "February" },
+  { value: 2, label: "March" },
+  { value: 3, label: "April" },
+  { value: 4, label: "May" },
+  { value: 5, label: "June" },
+  { value: 6, label: "July" },
+  { value: 7, label: "August" },
+  { value: 8, label: "September" },
+  { value: 9, label: "October" },
+  { value: 10, label: "November" },
+  { value: 11, label: "December" },
+];
+
+const PRODUCTION_QUARTER_OPTIONS = [1, 2, 3, 4];
+
 const insights: Insight[] = [
   {
     title: "Revenue trending up",
@@ -396,6 +456,37 @@ export default function EnhancedMobileDashboard() {
   const [productionPeriod, setProductionPeriod] = useState<ProductionPeriod>("Daily");
   const [productionCustomStart, setProductionCustomStart] = useState<string>("");
   const [productionCustomEnd, setProductionCustomEnd] = useState<string>("");
+  const [productionDailyDate, setProductionDailyDate] = useState<string>(() =>
+    format(new Date(), "yyyy-MM-dd"),
+  );
+  const [productionWeeklyDate, setProductionWeeklyDate] = useState<string>(() =>
+    format(new Date(), "yyyy-MM-dd"),
+  );
+  const [productionMonthlyMonth, setProductionMonthlyMonth] = useState<number>(() =>
+    new Date().getMonth(),
+  );
+  const [productionMonthlyYear, setProductionMonthlyYear] = useState<number>(() =>
+    new Date().getFullYear(),
+  );
+  const [productionQuarter, setProductionQuarter] = useState<number>(() =>
+    getQuarter(new Date()),
+  );
+  const [productionQuarterYear, setProductionQuarterYear] = useState<number>(() =>
+    new Date().getFullYear(),
+  );
+  const [productionYearToDateYear, setProductionYearToDateYear] = useState<number>(() =>
+    new Date().getFullYear(),
+  );
+  const [productionTrailingMonth, setProductionTrailingMonth] = useState<number>(() =>
+    new Date().getMonth(),
+  );
+  const [productionTrailingYear, setProductionTrailingYear] = useState<number>(() =>
+    new Date().getFullYear(),
+  );
+  const productionYearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return Array.from({ length: 12 }, (_, index) => currentYear + 1 - index);
+  }, []);
   const [showProductionCustomModal, setShowProductionCustomModal] = useState(false);
   const [productionEntries, setProductionEntries] = useState<ProductionEntry[]>([]);
   const [productionLoading, setProductionLoading] = useState(false);
@@ -761,8 +852,34 @@ export default function EnhancedMobileDashboard() {
   );
 
   const productionRange = useMemo(
-    () => getProductionPeriodRange(productionPeriod, productionCustomStart, productionCustomEnd),
-    [productionPeriod, productionCustomStart, productionCustomEnd],
+    () =>
+      getProductionPeriodRange(productionPeriod, {
+        customStart: productionCustomStart,
+        customEnd: productionCustomEnd,
+        dailyDate: productionDailyDate,
+        weeklyDate: productionWeeklyDate,
+        monthlyMonth: productionMonthlyMonth,
+        monthlyYear: productionMonthlyYear,
+        quarter: productionQuarter,
+        quarterYear: productionQuarterYear,
+        ytdYear: productionYearToDateYear,
+        trailingMonth: productionTrailingMonth,
+        trailingYear: productionTrailingYear,
+      }),
+    [
+      productionPeriod,
+      productionCustomStart,
+      productionCustomEnd,
+      productionDailyDate,
+      productionWeeklyDate,
+      productionMonthlyMonth,
+      productionMonthlyYear,
+      productionQuarter,
+      productionQuarterYear,
+      productionYearToDateYear,
+      productionTrailingMonth,
+      productionTrailingYear,
+    ],
   );
 
   const productionRangeLabel = useMemo(() => {
@@ -2634,18 +2751,254 @@ export default function EnhancedMobileDashboard() {
                     handleProductionPeriodSelect(e.target.value as ProductionPeriod)
                   }
                 >
-                  {PRODUCTION_PERIOD_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
+              {PRODUCTION_PERIOD_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+          {productionPeriod === "Daily" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Production Date
+              </label>
+              <input
+                type="date"
+                value={productionDailyDate}
+                onChange={(e) => setProductionDailyDate(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                  borderRadius: '8px',
+                  fontSize: '16px'
+                }}
+              />
+            </div>
+          )}
+          {productionPeriod === "Weekly" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Week Containing
+              </label>
+              <input
+                type="date"
+                value={productionWeeklyDate}
+                onChange={(e) => setProductionWeeklyDate(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                  borderRadius: '8px',
+                  fontSize: '16px'
+                }}
+              />
+              <p style={{ fontSize: '12px', marginTop: '8px', color: '#64748b' }}>
+                Select any day to view that week&apos;s Monday through Sunday production.
+              </p>
+            </div>
+          )}
+          {productionPeriod === "Monthly" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Month &amp; Year
+              </label>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <select
+                  value={productionMonthlyMonth}
+                  onChange={(e) => setProductionMonthlyMonth(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 150px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {PRODUCTION_MONTH_OPTIONS.map((month) => (
+                    <option key={month.value} value={month.value}>
+                      {month.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={productionMonthlyYear}
+                  onChange={(e) => setProductionMonthlyYear(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 120px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {productionYearOptions.map((year) => (
+                    <option key={`monthly-${year}`} value={year}>
+                      {year}
                     </option>
                   ))}
                 </select>
               </div>
-              {productionPeriod === "Custom" && (
-                <button
-                  type="button"
-                  onClick={openProductionCustomRange}
+            </div>
+          )}
+          {productionPeriod === "Quarterly" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Quarter &amp; Year
+              </label>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <select
+                  value={productionQuarter}
+                  onChange={(e) => setProductionQuarter(Number(e.target.value))}
                   style={{
+                    flex: '1 1 150px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {PRODUCTION_QUARTER_OPTIONS.map((quarterOption) => (
+                    <option key={`quarter-${quarterOption}`} value={quarterOption}>
+                      Q{quarterOption}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={productionQuarterYear}
+                  onChange={(e) => setProductionQuarterYear(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 120px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {productionYearOptions.map((year) => (
+                    <option key={`quarter-year-${year}`} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+          {productionPeriod === "Year to Date" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Reporting Year
+              </label>
+              <select
+                value={productionYearToDateYear}
+                onChange={(e) => setProductionYearToDateYear(Number(e.target.value))}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                  borderRadius: '8px',
+                  fontSize: '16px'
+                }}
+              >
+                {productionYearOptions.map((year) => (
+                  <option key={`ytd-${year}`} value={year}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {productionPeriod === "Trailing 12 Months" && (
+            <div style={{ marginBottom: '16px' }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: BRAND_COLORS.accent
+                }}
+              >
+                Ending Month
+              </label>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <select
+                  value={productionTrailingMonth}
+                  onChange={(e) => setProductionTrailingMonth(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 150px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {PRODUCTION_MONTH_OPTIONS.map((month) => (
+                    <option key={`trailing-month-${month.value}`} value={month.value}>
+                      {month.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={productionTrailingYear}
+                  onChange={(e) => setProductionTrailingYear(Number(e.target.value))}
+                  style={{
+                    flex: '1 1 120px',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                >
+                  {productionYearOptions.map((year) => (
+                    <option key={`trailing-year-${year}`} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+          {productionPeriod === "Custom" && (
+            <button
+              type="button"
+              onClick={openProductionCustomRange}
+              style={{
                     width: '100%',
                     marginBottom: '16px',
                     padding: '12px',
