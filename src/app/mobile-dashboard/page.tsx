@@ -21,6 +21,18 @@ import {
   MessageCircle,
   type LucideIcon,
 } from "lucide-react";
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  Legend,
+  BarChart,
+  Bar,
+} from "recharts";
 
 import { supabase } from "@/lib/supabaseClient";
 
@@ -55,6 +67,10 @@ interface PropertySummary {
   days90?: number;
   over90?: number;
   total?: number;
+  tonnage?: number;
+  reservationRevenue?: number;
+  avgPricePerTon?: number;
+  logCount?: number;
 }
 
 interface Category {
@@ -118,6 +134,26 @@ interface JournalEntryLine {
   customer: string | null;
   debit: number | null;
   credit: number | null;
+}
+
+interface ReservationLog {
+  id: string;
+  logDate: string;
+  tonnage: number;
+  pricePerTon: number;
+  totalAmount: number;
+  clientName: string;
+  deliverable: string;
+  approvalName: string;
+  processingStatus: string;
+}
+
+interface ReservationMetrics {
+  totalTonnage: number;
+  totalRevenue: number;
+  averagePricePerTon: number;
+  totalLogs: number;
+  revenueTrend: number;
 }
 
 const getMonthName = (m: number) =>
@@ -195,15 +231,16 @@ const insights: Insight[] = [
 export default function EnhancedMobileDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reportType, setReportType] = useState<
-    "pl" | "cf" | "ar" | "ap" | "payroll"
+    "pl" | "cf" | "ar" | "ap" | "payroll" | "reservations"
   >("pl");
   const [reportPeriod, setReportPeriod] = useState<
-    "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly"
+    "Daily" | "Weekly" | "Monthly" | "Quarterly" | "Year to Date" | "Trailing 12 Months" | "Custom"
   >("Monthly");
   const [month, setMonth] = useState<number>(new Date().getMonth() + 1);
   const [year, setYear] = useState<number>(new Date().getFullYear());
-  const [customStart, setCustomStart] = useState("");
-  const [customEnd, setCustomEnd] = useState("");
+  const todayISO = new Date().toISOString().split("T")[0];
+  const [customStart, setCustomStart] = useState(todayISO);
+  const [customEnd, setCustomEnd] = useState(todayISO);
   const [view, setView] = useState<"overview" | "summary" | "report" | "detail">("overview");
   const [properties, setProperties] = useState<PropertySummary[]>([]);
   const [selectedProperty, setSelectedProperty] = useState<string | null>(null);
@@ -232,6 +269,9 @@ export default function EnhancedMobileDashboard() {
   const [payrollTotals, setPayrollTotals] = useState<number>(0);
   const [employeeBreakdown, setEmployeeBreakdown] = useState<Record<string, { total: number; payments: Transaction[] }>>({});
   const [employeeTotals, setEmployeeTotals] = useState<Category[]>([]);
+  const [reservationLogs, setReservationLogs] = useState<ReservationLog[]>([]);
+  const [reservationLoading, setReservationLoading] = useState(false);
+  const [reservationError, setReservationError] = useState<string | null>(null);
 
   // AI CFO States
   const [isListening, setIsListening] = useState(false);
@@ -511,11 +551,36 @@ export default function EnhancedMobileDashboard() {
   const getDateRange = useCallback(() => {
     const makeUTCDate = (y: number, m: number, d: number) =>
       new Date(Date.UTC(y, m, d));
-    const y = year;
-    const m = month;
+
+    if (reportPeriod === "Daily") {
+      const day = customStart || todayISO;
+      return { start: day, end: day };
+    }
+
+    if (reportPeriod === "Weekly") {
+      const anchor = customStart ? new Date(customStart) : new Date();
+      const utcAnchor = new Date(
+        Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()),
+      );
+      const dayOfWeek = utcAnchor.getUTCDay();
+      const diffToMonday = (dayOfWeek + 6) % 7;
+      const monday = new Date(utcAnchor);
+      monday.setUTCDate(utcAnchor.getUTCDate() - diffToMonday);
+      const sunday = new Date(monday);
+      sunday.setUTCDate(monday.getUTCDate() + 6);
+      return {
+        start: monday.toISOString().split("T")[0],
+        end: sunday.toISOString().split("T")[0],
+      };
+    }
+
     if (reportPeriod === "Custom" && customStart && customEnd) {
       return { start: customStart, end: customEnd };
     }
+
+    const y = year;
+    const m = month;
+
     if (reportPeriod === "Monthly") {
       const startDate = makeUTCDate(y, m - 1, 1);
       const endDate = makeUTCDate(y, m, 0);
@@ -541,7 +606,7 @@ export default function EnhancedMobileDashboard() {
         end: endDate.toISOString().split("T")[0],
       };
     }
-    if (reportPeriod === "Trailing 12") {
+    if (reportPeriod === "Trailing 12 Months") {
       const endDate = makeUTCDate(y, m, 0);
       const startDate = makeUTCDate(y, m - 11, 1);
       return {
@@ -550,7 +615,7 @@ export default function EnhancedMobileDashboard() {
       };
     }
     return { start: `${y}-01-01`, end: `${y}-12-31` };
-  }, [reportPeriod, month, year, customStart, customEnd]);
+  }, [reportPeriod, month, year, customStart, customEnd, todayISO]);
 
   useEffect(() => {
     const load = async () => {
@@ -617,6 +682,11 @@ export default function EnhancedMobileDashboard() {
           map[customer].total = (map[customer].total || 0) + amt;
         });
         setProperties(Object.values(map));
+        return;
+      }
+
+      if (reportType === "reservations") {
+        await loadReservations();
         return;
       }
 
@@ -728,7 +798,7 @@ export default function EnhancedMobileDashboard() {
       setProperties(finalList);
     };
     load();
-  }, [reportType, reportPeriod, month, year, customStart, customEnd, getDateRange]);
+  }, [reportType, reportPeriod, month, year, customStart, customEnd, getDateRange, loadReservations]);
 
   const revenueKing = useMemo(() => {
     if (reportType !== "pl" || !properties.length) return null;
@@ -895,6 +965,122 @@ export default function EnhancedMobileDashboard() {
       over90: 0,
     },
   );
+
+  const currentRange = useMemo(() => getDateRange(), [getDateRange]);
+
+  const reservationMetrics = useMemo<ReservationMetrics>(() => {
+    if (!reservationLogs.length) {
+      return {
+        totalTonnage: 0,
+        totalRevenue: 0,
+        averagePricePerTon: 0,
+        totalLogs: 0,
+        revenueTrend: 0,
+      };
+    }
+
+    const totalTonnage = reservationLogs.reduce(
+      (sum, log) => sum + (log.tonnage || 0),
+      0,
+    );
+    const totalRevenue = reservationLogs.reduce(
+      (sum, log) => sum + (log.totalAmount || 0),
+      0,
+    );
+    const averagePricePerTon = totalTonnage
+      ? totalRevenue / (totalTonnage || 1)
+      : 0;
+
+    const sorted = [...reservationLogs].sort(
+      (a, b) => new Date(a.logDate).getTime() - new Date(b.logDate).getTime(),
+    );
+    const first = sorted[0]?.totalAmount || 0;
+    const last = sorted[sorted.length - 1]?.totalAmount || 0;
+    const revenueTrend = first ? ((last - first) / Math.abs(first)) * 100 : 0;
+
+    return {
+      totalTonnage,
+      totalRevenue,
+      averagePricePerTon,
+      totalLogs: reservationLogs.length,
+      revenueTrend,
+    };
+  }, [reservationLogs]);
+
+  const reservationChartData = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        date: string;
+        tonnage: number;
+        revenue: number;
+      }
+    >();
+
+    reservationLogs.forEach((log) => {
+      const key = log.logDate.split("T")[0];
+      if (!map.has(key)) {
+        map.set(key, { date: key, tonnage: 0, revenue: 0 });
+      }
+      const entry = map.get(key)!;
+      entry.tonnage += log.tonnage || 0;
+      entry.revenue += log.totalAmount || 0;
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [reservationLogs]);
+
+  const reservationClientCount = useMemo(() => {
+    const clients = new Set(
+      reservationLogs.map((log) => log.clientName || "Unknown Client"),
+    );
+    return clients.size;
+  }, [reservationLogs]);
+
+  const reservationRangeLabel = useMemo(() => {
+    const start = currentRange.start;
+    const end = currentRange.end;
+    if (!start || !end) return "";
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    if (start === end) {
+      return formatter.format(startDate);
+    }
+    return `${formatter.format(startDate)} - ${formatter.format(endDate)}`;
+  }, [currentRange]);
+
+  const topReservationClients = useMemo(() => {
+    if (reportType !== "reservations" || !properties.length) return [] as {
+      name: string;
+      revenue: number;
+      tonnage: number;
+    }[];
+    return [...properties]
+      .sort(
+        (a, b) =>
+          (b.reservationRevenue || 0) - (a.reservationRevenue || 0),
+      )
+      .slice(0, 5)
+      .map((p) => ({
+        name: p.name,
+        revenue: p.reservationRevenue || 0,
+        tonnage: p.tonnage || 0,
+      }));
+  }, [properties, reportType]);
+
+  const reservationStatusBreakdown = useMemo(() => {
+    const map = new Map<string, number>();
+    reservationLogs.forEach((log) => {
+      const status = log.processingStatus || "Pending";
+      map.set(status, (map.get(status) || 0) + 1);
+    });
+    return Array.from(map.entries()).map(([status, count]) => ({ status, count }));
+  }, [reservationLogs]);
 
   const formatCurrency = (n: number) =>
     new Intl.NumberFormat("en-US", {
@@ -1073,8 +1259,11 @@ export default function EnhancedMobileDashboard() {
     else if (reportType === "cf") await loadCF(name);
     else if (reportType === "payroll") await loadPayroll(name);
     else if (reportType === "ap") await loadAP(name);
+    else if (reportType === "reservations") await loadReservations(name);
     else await loadAR(name);
-    setView("report");
+    if (reportType !== "reservations") {
+      setView("report");
+    }
   };
 
   const loadPL = async (propertyName: string | null = selectedProperty) => {
@@ -1119,7 +1308,7 @@ export default function EnhancedMobileDashboard() {
 
   const loadCF = async (propertyName: string | null = selectedProperty) => {
     const { start, end } = getDateRange();
-    
+
     // Enhanced query mirroring cash flow component
     const selectColumns = "account, account_type, report_category, normal_balance, debit, credit, customer, date, entry_bank_account, is_cash_account";
     
@@ -1182,6 +1371,87 @@ export default function EnhancedMobileDashboard() {
       investing: investingArr
     });
   };
+
+  const loadReservations = useCallback(
+    async (clientName: string | null = selectedProperty) => {
+      setReservationLoading(true);
+      setReservationError(null);
+      try {
+        const { start, end } = getDateRange();
+        let query = supabase
+        .from("wastex_production_log")
+        .select(
+          "id, log_date, tonnage, price_per_ton, total_amount, client_name, project_deliverable, approval_name, processing_status",
+        )
+        .gte("log_date", start)
+        .lte("log_date", end)
+        .order("log_date", { ascending: true });
+
+      if (clientName) {
+        query = query.eq("client_name", clientName);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        throw error;
+      }
+
+      const normalized: ReservationLog[] = (data || []).map((row: any) => {
+        const rawDate = row.log_date ? new Date(row.log_date) : new Date();
+        const isoDate = rawDate.toISOString();
+        const tonnage = Number(row.tonnage) || 0;
+        const pricePerTon = Number(row.price_per_ton) || 0;
+        const totalAmount = Number(row.total_amount) || tonnage * pricePerTon;
+
+        return {
+          id: row.id ? String(row.id) : `${isoDate}-${row.client_name ?? "unknown"}`,
+          logDate: isoDate,
+          tonnage,
+          pricePerTon,
+          totalAmount,
+          clientName: row.client_name || "Unknown Client",
+          deliverable: row.project_deliverable || "N/A",
+          approvalName: row.approval_name || "Pending",
+          processingStatus: row.processing_status || "Pending",
+        };
+      });
+
+      const summaryMap: Record<string, PropertySummary> = {};
+      normalized.forEach((log) => {
+        const client = log.clientName || "Unknown Client";
+        if (!summaryMap[client]) {
+          summaryMap[client] = {
+            name: client,
+            tonnage: 0,
+            reservationRevenue: 0,
+            logCount: 0,
+          };
+        }
+        summaryMap[client].tonnage = (summaryMap[client].tonnage || 0) + log.tonnage;
+        summaryMap[client].reservationRevenue =
+          (summaryMap[client].reservationRevenue || 0) + log.totalAmount;
+        summaryMap[client].logCount = (summaryMap[client].logCount || 0) + 1;
+      });
+
+      Object.values(summaryMap).forEach((item) => {
+        item.avgPricePerTon = (item.tonnage || 0)
+          ? (item.reservationRevenue || 0) / (item.tonnage || 1)
+          : 0;
+      });
+
+      setReservationLogs(normalized);
+      setProperties(Object.values(summaryMap));
+    } catch (err: any) {
+      console.error("Failed to load reservations", err);
+      setReservationLogs([]);
+      setProperties([]);
+      setReservationError(err?.message ?? "Unable to load reservation data");
+      } finally {
+        setReservationLoading(false);
+      }
+    },
+    [getDateRange, selectedProperty],
+  );
 
   const loadAR = async (propertyName: string | null = selectedProperty) => {
     let query = supabase
@@ -1419,11 +1689,26 @@ export default function EnhancedMobileDashboard() {
               ? "Payroll Dashboard"
               : reportType === "ap"
               ? "A/P Aging Report"
+              : reportType === "reservations"
+              ? "Reservations Dashboard"
               : "A/R Aging Report"}
           </h1>
           <p style={{ fontSize: '14px', opacity: 0.9 }}>
-            {reportType === "ar" || reportType === "ap" ? "As of Today" : `${getMonthName(month)} ${year}`} • {properties.length}{" "}
-            {reportType === "payroll" ? "Departments" : reportType === "ap" ? "Vendors" : "Customers"}
+            {reportType === "ar" || reportType === "ap"
+              ? "As of Today"
+              : reportType === "reservations"
+              ? reservationRangeLabel || "Selected Range"
+              : `${getMonthName(month)} ${year}`}
+            {" • "}
+            {reportType === "payroll"
+              ? `${properties.length} Departments`
+              : reportType === "ap"
+              ? `${properties.length} Vendors`
+              : reportType === "ar"
+              ? `${properties.length} Customers`
+              : reportType === "reservations"
+              ? `${reservationClientCount} Clients`
+              : `${properties.length} Customers`}
           </p>
         </div>
 
@@ -1451,10 +1736,14 @@ export default function EnhancedMobileDashboard() {
           <div style={{ textAlign: 'center', marginBottom: '16px' }}>
             <span style={{ fontSize: '14px', opacity: 0.9 }}>Company Total</span>
             <div style={{ fontSize: '32px', fontWeight: 'bold', margin: '8px 0' }}>
-              {formatCompactCurrency(companyTotals.net)}
+              {formatCompactCurrency(
+                reportType === "reservations"
+                  ? reservationMetrics.totalRevenue
+                  : companyTotals.net,
+              )}
             </div>
           </div>
-          
+
           {reportType === "pl" ? (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', textAlign: 'center' }}>
               <div>
@@ -1516,6 +1805,35 @@ export default function EnhancedMobileDashboard() {
                   {formatCompactCurrency(companyTotals.expenses)}
                 </div>
                 <div style={{ fontSize: '11px', opacity: 0.8 }}>Payroll</div>
+              </div>
+            </div>
+          ) : reportType === "reservations" ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', textAlign: 'center' }}>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {reservationMetrics.totalTonnage.toLocaleString("en-US", {
+                    maximumFractionDigits: 1,
+                  })}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Total Tonnage</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatCompactCurrency(reservationMetrics.totalRevenue)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Total Revenue</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatCurrency(reservationMetrics.averagePricePerTon || 0)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Avg Price / Ton</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {reservationMetrics.totalLogs.toLocaleString("en-US")}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Logs Processed</div>
               </div>
             </div>
           ) : (
@@ -1585,7 +1903,13 @@ export default function EnhancedMobileDashboard() {
               value={reportType}
               onChange={(e) =>
                 setReportType(
-                  e.target.value as "pl" | "cf" | "ar" | "ap" | "payroll",
+                  e.target.value as
+                    | "pl"
+                    | "cf"
+                    | "ar"
+                    | "ap"
+                    | "payroll"
+                    | "reservations",
                 )
               }
             >
@@ -1594,6 +1918,7 @@ export default function EnhancedMobileDashboard() {
               <option value="payroll">Payroll</option>
               <option value="ar">A/R Aging Report</option>
               <option value="ap">A/P Aging Report</option>
+              <option value="reservations">Reservations</option>
             </select>
           </div>
           {reportType !== "ar" && reportType !== "ap" && (
@@ -1612,14 +1937,25 @@ export default function EnhancedMobileDashboard() {
                   }}
                   value={reportPeriod}
                   onChange={(e) =>
-                    setReportPeriod(e.target.value as "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly")
+                    setReportPeriod(
+                      e.target.value as
+                        | "Daily"
+                        | "Weekly"
+                        | "Monthly"
+                        | "Quarterly"
+                        | "Year to Date"
+                        | "Trailing 12 Months"
+                        | "Custom",
+                    )
                   }
                 >
+                  <option value="Daily">Daily</option>
+                  <option value="Weekly">Weekly (Mon-Sun)</option>
                   <option value="Monthly">Monthly</option>
-                  <option value="Custom">Custom Range</option>
                   <option value="Year to Date">Year to Date</option>
-                  <option value="Trailing 12">Trailing 12 Months</option>
+                  <option value="Trailing 12 Months">Trailing 12 Months</option>
                   <option value="Quarterly">Quarterly</option>
+                  <option value="Custom">Custom Range</option>
                 </select>
               </div>
               {reportPeriod === "Custom" ? (
@@ -1647,6 +1983,25 @@ export default function EnhancedMobileDashboard() {
                     }}
                     value={customEnd}
                     onChange={(e) => setCustomEnd(e.target.value)}
+                  />
+                </div>
+              ) : reportPeriod === "Daily" || reportPeriod === "Weekly" ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
+                  <input
+                    type="date"
+                    style={{
+                      padding: '12px',
+                      border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                      borderRadius: '8px',
+                      fontSize: '16px'
+                    }}
+                    value={customStart}
+                    onChange={(e) => {
+                      setCustomStart(e.target.value);
+                      if (reportPeriod === "Daily") {
+                        setCustomEnd(e.target.value);
+                      }
+                    }}
                   />
                 </div>
               ) : (
@@ -1689,9 +2044,9 @@ export default function EnhancedMobileDashboard() {
                     })}
                   </select>
                 </div>
-              )}
-            </>
-          )}
+        )}
+      </>
+      )}
           <button
             style={{
               width: '100%',
@@ -1711,6 +2066,253 @@ export default function EnhancedMobileDashboard() {
         </div>
       )}
 
+      {reportType === "reservations" ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          <div
+            style={{
+              background: 'white',
+              borderRadius: '16px',
+              padding: '20px',
+              border: `1px solid ${BRAND_COLORS.gray[200]}`,
+              boxShadow: '0 4px 20px rgba(86, 182, 233, 0.1)'
+            }}
+          >
+            <h3 style={{ fontSize: '18px', fontWeight: '600', color: BRAND_COLORS.accent, marginBottom: '16px' }}>
+              Reservation Performance
+            </h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' }}>
+              <div style={{ background: BRAND_COLORS.gray[50], padding: '16px', borderRadius: '12px' }}>
+                <div style={{ fontSize: '12px', color: BRAND_COLORS.accent, fontWeight: '600', marginBottom: '4px' }}>
+                  TOTAL TONNAGE
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: '700' }}>
+                  {reservationMetrics.totalTonnage.toLocaleString('en-US', { maximumFractionDigits: 1 })}
+                </div>
+              </div>
+              <div style={{ background: BRAND_COLORS.gray[50], padding: '16px', borderRadius: '12px' }}>
+                <div style={{ fontSize: '12px', color: BRAND_COLORS.accent, fontWeight: '600', marginBottom: '4px' }}>
+                  TOTAL REVENUE
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: '700' }}>
+                  {formatCurrency(reservationMetrics.totalRevenue)}
+                </div>
+              </div>
+              <div style={{ background: BRAND_COLORS.gray[50], padding: '16px', borderRadius: '12px' }}>
+                <div style={{ fontSize: '12px', color: BRAND_COLORS.accent, fontWeight: '600', marginBottom: '4px' }}>
+                  AVG PRICE / TON
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: '700' }}>
+                  {formatCurrency(reservationMetrics.averagePricePerTon || 0)}
+                </div>
+              </div>
+              <div style={{ background: BRAND_COLORS.gray[50], padding: '16px', borderRadius: '12px' }}>
+                <div style={{ fontSize: '12px', color: BRAND_COLORS.accent, fontWeight: '600', marginBottom: '4px' }}>
+                  LOGS PROCESSED
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: '700' }}>
+                  {reservationMetrics.totalLogs.toLocaleString('en-US')}
+                </div>
+              </div>
+              <div style={{ background: BRAND_COLORS.gray[50], padding: '16px', borderRadius: '12px' }}>
+                <div style={{ fontSize: '12px', color: BRAND_COLORS.accent, fontWeight: '600', marginBottom: '4px' }}>
+                  REVENUE TREND
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: '700', color: reservationMetrics.revenueTrend >= 0 ? BRAND_COLORS.success : BRAND_COLORS.danger }}>
+                  {`${reservationMetrics.revenueTrend >= 0 ? '+' : ''}${reservationMetrics.revenueTrend.toFixed(1)}%`}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {reservationLoading ? (
+            <div
+              style={{
+                background: 'white',
+                borderRadius: '16px',
+                padding: '20px',
+                border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                textAlign: 'center',
+                color: BRAND_COLORS.accent,
+              }}
+            >
+              Loading reservation data...
+            </div>
+          ) : reservationError ? (
+            <div
+              style={{
+                background: '#fee2e2',
+                borderRadius: '16px',
+                padding: '20px',
+                border: `1px solid ${BRAND_COLORS.danger}55`,
+                color: BRAND_COLORS.danger,
+              }}
+            >
+              {reservationError}
+            </div>
+          ) : (
+            <>
+              <div
+                style={{
+                  background: 'white',
+                  borderRadius: '16px',
+                  padding: '20px',
+                  border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                  boxShadow: '0 4px 20px rgba(86, 182, 233, 0.1)'
+                }}
+              >
+                <h3 style={{ fontSize: '18px', fontWeight: '600', color: BRAND_COLORS.accent, marginBottom: '16px' }}>
+                  Production Trends
+                </h3>
+                <div style={{ height: '260px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={reservationChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="date" stroke={BRAND_COLORS.gray[500]} tick={{ fontSize: 12 }} />
+                      <YAxis yAxisId="left" stroke={BRAND_COLORS.primary} tick={{ fontSize: 12 }} />
+                      <YAxis yAxisId="right" orientation="right" stroke={BRAND_COLORS.secondary} tick={{ fontSize: 12 }} />
+                      <Tooltip formatter={(value: number, name: string) => [name === 'revenue' ? formatCurrency(value) : value.toLocaleString('en-US'), name === 'revenue' ? 'Revenue' : 'Tonnage']} />
+                      <Legend />
+                      <Line
+                        yAxisId="left"
+                        type="monotone"
+                        dataKey="tonnage"
+                        stroke={BRAND_COLORS.primary}
+                        strokeWidth={2}
+                        activeDot={{ r: 5 }}
+                        name="Tonnage"
+                      />
+                      <Line
+                        yAxisId="right"
+                        type="monotone"
+                        dataKey="revenue"
+                        stroke={BRAND_COLORS.secondary}
+                        strokeWidth={2}
+                        name="Revenue"
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+                <div
+                  style={{
+                    background: 'white',
+                    borderRadius: '16px',
+                    padding: '20px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    boxShadow: '0 4px 20px rgba(86, 182, 233, 0.1)'
+                  }}
+                >
+                  <h3 style={{ fontSize: '16px', fontWeight: '600', color: BRAND_COLORS.accent, marginBottom: '16px' }}>
+                    Top Clients by Revenue
+                  </h3>
+                  <div style={{ height: '240px' }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topReservationClients}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={80} />
+                        <YAxis tick={{ fontSize: 12 }} />
+                        <Tooltip formatter={(value: number, name: string) => [name === 'revenue' ? formatCurrency(value) : value.toLocaleString('en-US'), name === 'revenue' ? 'Revenue' : 'Tonnage']} />
+                        <Legend />
+                        <Bar dataKey="revenue" fill={BRAND_COLORS.primary} name="Revenue" radius={[8, 8, 0, 0]} />
+                        <Bar dataKey="tonnage" fill={BRAND_COLORS.secondary} name="Tonnage" radius={[8, 8, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    background: 'white',
+                    borderRadius: '16px',
+                    padding: '20px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    boxShadow: '0 4px 20px rgba(86, 182, 233, 0.1)'
+                  }}
+                >
+                  <h3 style={{ fontSize: '16px', fontWeight: '600', color: BRAND_COLORS.accent, marginBottom: '16px' }}>
+                    Processing Status
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {reservationStatusBreakdown.map((status) => (
+                      <div
+                        key={status.status}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          background: BRAND_COLORS.gray[50],
+                          padding: '12px 16px',
+                          borderRadius: '12px'
+                        }}
+                      >
+                        <span style={{ fontWeight: 600 }}>{status.status}</span>
+                        <span style={{ color: BRAND_COLORS.accent, fontWeight: 700 }}>{status.count}</span>
+                      </div>
+                    ))}
+                    {!reservationStatusBreakdown.length && (
+                      <span style={{ color: BRAND_COLORS.gray[500] }}>No reservations found for this period.</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: 'white',
+                  borderRadius: '16px',
+                  padding: '20px',
+                  border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                  boxShadow: '0 4px 20px rgba(86, 182, 233, 0.1)'
+                }}
+              >
+                <h3 style={{ fontSize: '18px', fontWeight: '600', color: BRAND_COLORS.accent, marginBottom: '16px' }}>
+                  Reservation Log Details
+                </h3>
+                <div style={{ maxHeight: '360px', overflowY: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ textAlign: 'left', color: BRAND_COLORS.gray[600] }}>
+                        <th style={{ padding: '8px', borderBottom: `1px solid ${BRAND_COLORS.gray[200]}` }}>Date</th>
+                        <th style={{ padding: '8px', borderBottom: `1px solid ${BRAND_COLORS.gray[200]}` }}>Client</th>
+                        <th style={{ padding: '8px', borderBottom: `1px solid ${BRAND_COLORS.gray[200]}` }}>Deliverable</th>
+                        <th style={{ padding: '8px', borderBottom: `1px solid ${BRAND_COLORS.gray[200]}` }}>Tonnage</th>
+                        <th style={{ padding: '8px', borderBottom: `1px solid ${BRAND_COLORS.gray[200]}` }}>Price/Ton</th>
+                        <th style={{ padding: '8px', borderBottom: `1px solid ${BRAND_COLORS.gray[200]}` }}>Total</th>
+                        <th style={{ padding: '8px', borderBottom: `1px solid ${BRAND_COLORS.gray[200]}` }}>Status</th>
+                        <th style={{ padding: '8px', borderBottom: `1px solid ${BRAND_COLORS.gray[200]}` }}>Approval</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reservationLogs.map((log) => (
+                        <tr key={log.id} style={{ borderBottom: `1px solid ${BRAND_COLORS.gray[100]}` }}>
+                          <td style={{ padding: '10px 8px' }}>{new Date(log.logDate).toLocaleDateString()}</td>
+                          <td style={{ padding: '10px 8px' }}>{log.clientName}</td>
+                          <td style={{ padding: '10px 8px' }}>{log.deliverable}</td>
+                          <td style={{ padding: '10px 8px' }}>{log.tonnage.toLocaleString('en-US', { maximumFractionDigits: 2 })}</td>
+                          <td style={{ padding: '10px 8px' }}>{formatCurrency(log.pricePerTon)}</td>
+                          <td style={{ padding: '10px 8px', fontWeight: 600 }}>{formatCurrency(log.totalAmount)}</td>
+                          <td style={{ padding: '10px 8px' }}>{log.processingStatus}</td>
+                          <td style={{ padding: '10px 8px' }}>{log.approvalName}</td>
+                        </tr>
+                      ))}
+                      {!reservationLogs.length && (
+                        <tr>
+                          <td colSpan={8} style={{ padding: '16px', textAlign: 'center', color: BRAND_COLORS.gray[500] }}>
+                            No reservation logs for the selected period.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <>
       {view === "overview" && (
         <div>
           {/* Portfolio Insights */}
@@ -2605,17 +3207,40 @@ export default function EnhancedMobileDashboard() {
                 color: BRAND_COLORS.accent
               }}
             >
-              Company Total {reportType === "pl" ? "Net Income" : reportType === "cf" ? "Net Cash" : reportType === "payroll" ? "Payroll" : reportType === "ap" ? "A/P" : "A/R"}
+              Company Total {reportType === "pl"
+                ? "Net Income"
+                : reportType === "cf"
+                ? "Net Cash"
+                : reportType === "payroll"
+                ? "Payroll"
+                : reportType === "ap"
+                ? "A/P"
+                : reportType === "reservations"
+                ? "Revenue"
+                : "A/R"}
             </span>
             <div
               style={{
                 fontSize: '20px',
                 fontWeight: '800',
                 marginTop: '4px',
-                color: reportType === "ar" || reportType === "ap" ? BRAND_COLORS.primary : reportType === "payroll" ? BRAND_COLORS.danger : companyTotals.net >= 0 ? BRAND_COLORS.success : BRAND_COLORS.danger
+                color:
+                  reportType === "ar" || reportType === "ap"
+                    ? BRAND_COLORS.primary
+                    : reportType === "payroll"
+                    ? BRAND_COLORS.danger
+                    : reportType === "reservations"
+                    ? BRAND_COLORS.accent
+                    : companyTotals.net >= 0
+                    ? BRAND_COLORS.success
+                    : BRAND_COLORS.danger
               }}
             >
-              {formatCompactCurrency(companyTotals.net)}
+              {formatCompactCurrency(
+                reportType === "reservations"
+                  ? reservationMetrics.totalRevenue
+                  : companyTotals.net,
+              )}
             </div>
           </div>
         </div>
@@ -3358,6 +3983,8 @@ export default function EnhancedMobileDashboard() {
             </>
           )}
         </div>
+      )}
+        </>
       )}
 
       {/* Journal Modal */}
