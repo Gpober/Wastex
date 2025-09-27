@@ -7,6 +7,8 @@ import {
   useCallback,
   useRef,
   type ChangeEvent,
+  type CSSProperties,
+  type ReactNode,
 } from "react";
 import {
   Menu,
@@ -28,6 +30,8 @@ import {
   Image as ImageIcon,
   Upload,
   RefreshCcw,
+  Pencil,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -336,7 +340,277 @@ interface ProductionFormState {
   notes: string;
 }
 
+type ProductionSyncOperation =
+  | {
+      type: "edit";
+      entryId: string;
+      timestamp: number;
+      payload: {
+        log_date: string;
+        tonnage: number;
+        price_per_ton: number;
+        total_amount: number;
+        client_name: string;
+        project_deliverable: string | null;
+        processing_status: string | null;
+      };
+      photo?: {
+        action: "unchanged" | "remove" | "replace";
+        dataUrl?: string | null;
+        fileName?: string | null;
+        hash?: string | null;
+      };
+    }
+  | {
+      type: "delete";
+      entryId: string;
+      timestamp: number;
+    };
+
 const PRODUCTION_STORAGE_KEY = "wastex.production.logs";
+const PRODUCTION_OPERATIONS_STORAGE_KEY = "wastex.production.operations";
+const SWIPE_ACTION_WIDTH = 168;
+const SWIPE_OPEN_THRESHOLD = 48;
+
+const visuallyHiddenStyles: CSSProperties = {
+  border: 0,
+  clip: "rect(0 0 0 0)",
+  height: "1px",
+  margin: "-1px",
+  overflow: "hidden",
+  padding: 0,
+  position: "absolute",
+  whiteSpace: "nowrap",
+  width: "1px",
+};
+
+const getSupabaseId = (entryId: string | null | undefined): number | null => {
+  if (!entryId) return null;
+  const match = entryId.match(/^remote-(\d+)$/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const ProductionSwipeItem = ({
+  entry,
+  isOpen,
+  onOpen,
+  onClose,
+  onEdit,
+  onDelete,
+  children,
+}: {
+  entry: ProductionEntry;
+  isOpen: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  children: ReactNode;
+}) => {
+  const [translateX, setTranslateX] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const startXRef = useRef<number | null>(null);
+  const actionsRef = useRef<HTMLDivElement | null>(null);
+  const [actionWidth, setActionWidth] = useState(SWIPE_ACTION_WIDTH);
+
+  useEffect(() => {
+    const element = actionsRef.current;
+    if (!element) return;
+
+    const updateWidth = () => {
+      const measured = element.offsetWidth || SWIPE_ACTION_WIDTH;
+      setActionWidth(measured);
+      if (!isDragging) {
+        setTranslateX(isOpen ? -measured : 0);
+      }
+    };
+
+    updateWidth();
+
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => updateWidth());
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [isDragging, isOpen]);
+
+  useEffect(() => {
+    if (!isDragging) {
+      setTranslateX(isOpen ? -actionWidth : 0);
+    }
+  }, [actionWidth, isDragging, isOpen]);
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    setIsDragging(true);
+    startXRef.current = event.clientX;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDragging || startXRef.current === null) return;
+    const delta = event.clientX - startXRef.current;
+    const overshoot = Math.min(actionWidth * 0.25, 48);
+    const next = Math.max(Math.min(delta, overshoot), -actionWidth - overshoot);
+    setTranslateX(next);
+  };
+
+  const finishSwipe = (finalTranslate: number) => {
+    const threshold = Math.min(SWIPE_OPEN_THRESHOLD, actionWidth * 0.6);
+    if (finalTranslate <= -threshold) {
+      setTranslateX(-actionWidth);
+      onOpen();
+    } else {
+      setTranslateX(0);
+      onClose();
+    }
+    setIsDragging(false);
+    startXRef.current = null;
+  };
+
+  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    finishSwipe(translateX);
+  };
+
+  const handlePointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    finishSwipe(translateX);
+  };
+
+  const handleCardClick = () => {
+    if (isOpen) {
+      onClose();
+    }
+  };
+
+  const handleEditClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onClose();
+    onEdit();
+  };
+
+  const handleDeleteClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onClose();
+    onDelete();
+  };
+
+  return (
+    <div
+      data-production-swipe
+      style={{
+        position: "relative",
+        borderRadius: "12px",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          justifyContent: "flex-end",
+          alignItems: "center",
+          gap: "8px",
+          padding: "0 8px",
+          background: "rgba(15,23,42,0.04)",
+        }}
+        ref={actionsRef}
+        aria-hidden={!isOpen}
+      >
+        <button
+          type="button"
+          onClick={handleEditClick}
+          tabIndex={isOpen ? 0 : -1}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "6px",
+            padding: "12px 18px",
+            borderRadius: "10px",
+            border: "none",
+            background: BRAND_COLORS.accent,
+            color: "white",
+            fontWeight: 600,
+            cursor: "pointer",
+            minWidth: "84px",
+            minHeight: "44px",
+          }}
+          aria-label={`Edit production entry for ${entry.clientName}`}
+        >
+          <Pencil size={16} /> Edit
+        </button>
+        <button
+          type="button"
+          onClick={handleDeleteClick}
+          tabIndex={isOpen ? 0 : -1}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "6px",
+            padding: "12px 18px",
+            borderRadius: "10px",
+            border: "none",
+            background: BRAND_COLORS.danger,
+            color: "white",
+            fontWeight: 600,
+            cursor: "pointer",
+            minWidth: "84px",
+            minHeight: "44px",
+          }}
+          aria-label={`Delete production entry for ${entry.clientName}`}
+        >
+          <Trash2 size={16} /> Delete
+        </button>
+      </div>
+      <div
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onClick={handleCardClick}
+        style={{
+          transform: `translateX(${translateX}px)`,
+          transition: isDragging ? "none" : "transform 0.2s ease",
+          touchAction: "pan-y",
+          background: isOpen
+            ? "rgba(15,23,42,0.05)"
+            : "rgba(248,250,252,0.96)",
+          border: `1px solid ${BRAND_COLORS.gray[200]}`,
+          borderRadius: "12px",
+          display: "flex",
+          gap: "12px",
+          alignItems: "center",
+          padding: "12px",
+          boxShadow: isOpen
+            ? "0 8px 20px rgba(15,23,42,0.16)"
+            : "0 3px 14px rgba(15,23,42,0.08)",
+          opacity: isOpen || isDragging ? 0.94 : 1,
+        }}
+      >
+        <div style={visuallyHiddenStyles}>
+          <button type="button" onClick={onEdit}>
+            Edit production entry
+          </button>
+          <button type="button" onClick={onDelete}>
+            Delete production entry
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+};
 
 const PRODUCTION_CLIENTS = [
   "Panzarella Waste",
@@ -502,6 +776,14 @@ export default function EnhancedMobileDashboard() {
   const [productionViewAll, setProductionViewAll] = useState(false);
   const [productionDuplicateAlert, setProductionDuplicateAlert] = useState<string | null>(null);
 
+  const [editingProductionEntry, setEditingProductionEntry] = useState<ProductionEntry | null>(null);
+  const [productionPhotoDirty, setProductionPhotoDirty] = useState(false);
+  const [productionPhotoRemoved, setProductionPhotoRemoved] = useState(false);
+  const [productionPendingOperations, setProductionPendingOperations] = useState<ProductionSyncOperation[]>([]);
+  const [productionDeleteTarget, setProductionDeleteTarget] = useState<ProductionEntry | null>(null);
+  const [productionDeleting, setProductionDeleting] = useState(false);
+  const [openProductionSwipeId, setOpenProductionSwipeId] = useState<string | null>(null);
+
   const [productionForm, setProductionForm] = useState<ProductionFormState>(
     getDefaultProductionForm,
   );
@@ -538,6 +820,137 @@ export default function EnhancedMobileDashboard() {
       console.error("Failed to load production entries from storage", error);
     }
   }, []);
+
+  const persistProductionOperations = useCallback(
+    (operations: ProductionSyncOperation[]) => {
+      if (typeof window === "undefined") return;
+      try {
+        localStorage.setItem(
+          PRODUCTION_OPERATIONS_STORAGE_KEY,
+          JSON.stringify(operations),
+        );
+      } catch (error) {
+        console.error("Failed to persist production operations", error);
+      }
+    },
+    [],
+  );
+
+  const loadProductionOperationsFromStorage = useCallback(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const stored = localStorage.getItem(PRODUCTION_OPERATIONS_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as ProductionSyncOperation[];
+        setProductionPendingOperations(parsed);
+      }
+    } catch (error) {
+      console.error("Failed to load production operations from storage", error);
+    }
+  }, []);
+
+  const queueProductionOperation = useCallback(
+    (operation: ProductionSyncOperation) => {
+      setProductionPendingOperations((prev) => {
+        const filtered = prev.filter((existing) => existing.entryId !== operation.entryId);
+        const next = [...filtered, operation].sort(
+          (a, b) => a.timestamp - b.timestamp,
+        );
+        persistProductionOperations(next);
+        return next;
+      });
+    },
+    [persistProductionOperations],
+  );
+
+  const processPendingOperations = useCallback(async () => {
+    if (!productionPendingOperations.length) {
+      return;
+    }
+
+    const remaining: ProductionSyncOperation[] = [];
+
+    for (const operation of productionPendingOperations) {
+      const supabaseId = getSupabaseId(operation.entryId);
+      if (!supabaseId) {
+        continue;
+      }
+
+      try {
+        if (operation.type === "delete") {
+          const { error: deleteError } = await supabase
+            .from("wastex_production_logs")
+            .delete()
+            .eq("id", supabaseId);
+          if (deleteError) throw deleteError;
+          continue;
+        }
+
+        const payload: Record<string, any> = { ...operation.payload };
+
+        if (operation.photo?.action === "remove") {
+          payload.file_url = null;
+          payload.file_name = null;
+          payload.photo_hash = null;
+        } else if (operation.photo?.action === "replace" && operation.photo.dataUrl) {
+          const response = await fetch(operation.photo.dataUrl);
+          const blob = await response.blob();
+          const uploadFile = new File(
+            [blob],
+            operation.photo.fileName || `production-${operation.entryId}.jpg`,
+            { type: blob.type || "image/jpeg" },
+          );
+
+          const hash = operation.photo.hash || (await computeFileHash(uploadFile));
+
+          const { data: duplicate, error: duplicateError } = await supabase
+            .from("wastex_production_logs")
+            .select("file_url, file_name, id")
+            .eq("photo_hash", hash)
+            .maybeSingle();
+
+          if (!duplicateError && duplicate) {
+            payload.file_url = duplicate.file_url;
+            payload.file_name = duplicate.file_name;
+            payload.photo_hash = hash;
+          } else {
+            const ext = uploadFile.name.split(".").pop() || "jpg";
+            const uploadPath = `mobile/${operation.payload.log_date}-${crypto.randomUUID()}.${ext}`;
+            const { error: uploadError } = await supabase
+              .storage
+              .from("production-photos")
+              .upload(uploadPath, uploadFile, { upsert: false });
+            if (uploadError) throw uploadError;
+            const { data: publicUrl } = supabase
+              .storage
+              .from("production-photos")
+              .getPublicUrl(uploadPath);
+            payload.file_url = publicUrl?.publicUrl ?? null;
+            payload.file_name = uploadPath;
+            payload.photo_hash = hash;
+          }
+        } else if (operation.photo?.action === "unchanged" && operation.photo.hash) {
+          payload.photo_hash = operation.photo.hash;
+        }
+
+        const { error: updateError } = await supabase
+          .from("wastex_production_logs")
+          .update(payload)
+          .eq("id", supabaseId);
+        if (updateError) throw updateError;
+      } catch (error) {
+        console.error("Failed to sync production operation", error);
+        remaining.push(operation);
+      }
+    }
+
+    setProductionPendingOperations(remaining);
+    persistProductionOperations(remaining);
+  }, [
+    computeFileHash,
+    persistProductionOperations,
+    productionPendingOperations,
+  ]);
 
   const computeFileHash = useCallback(async (file: Blob) => {
     const buffer = await file.arrayBuffer();
@@ -606,18 +1019,29 @@ export default function EnhancedMobileDashboard() {
     }
   }, []);
 
-  const clearProductionPhoto = useCallback(() => {
+  const resetProductionPhotoState = useCallback(() => {
     setProductionPhotoFile(null);
     setProductionPhotoPreview(null);
     setProductionPhotoHash(null);
     setProductionDuplicateAlert(null);
+    setProductionPhotoDirty(false);
+    setProductionPhotoRemoved(false);
+  }, []);
+
+  const removeProductionPhoto = useCallback(() => {
+    setProductionPhotoFile(null);
+    setProductionPhotoPreview(null);
+    setProductionPhotoHash(null);
+    setProductionDuplicateAlert(null);
+    setProductionPhotoDirty(true);
+    setProductionPhotoRemoved(true);
   }, []);
 
   const resetProductionForm = useCallback(() => {
     setProductionForm(getDefaultProductionForm());
     setProductionErrors({});
-    clearProductionPhoto();
-  }, [clearProductionPhoto]);
+    resetProductionPhotoState();
+  }, [resetProductionPhotoState]);
 
   const handleProductionFieldChange = useCallback(
     (field: keyof ProductionFormState) =>
@@ -667,6 +1091,8 @@ export default function EnhancedMobileDashboard() {
         setProductionPhotoPreview(preview);
         setProductionPhotoHash(hash);
         setProductionDuplicateAlert(null);
+        setProductionPhotoDirty(true);
+        setProductionPhotoRemoved(false);
       } catch (error) {
         console.error("Failed to process production photo", error);
         setProductionNotice("Unable to process the selected photo. Please try again.");
@@ -732,123 +1158,138 @@ export default function EnhancedMobileDashboard() {
     async (entriesOverride?: ProductionEntry[]) => {
       const baseEntries = entriesOverride ?? productionEntries;
       const offlineEntries = baseEntries.filter((entry) => entry.localOnly);
-      if (!offlineEntries.length) return;
+      const hasOperations = productionPendingOperations.length > 0;
+      if (!offlineEntries.length && !hasOperations) return;
 
       setProductionSyncing(true);
       const updatedEntries = [...baseEntries];
       let syncedCount = 0;
 
       try {
-        for (const offline of offlineEntries) {
-          const index = updatedEntries.findIndex((entry) => entry.id === offline.id);
-          if (index === -1) continue;
-          try {
-            let fileUrl = offline.fileUrl ?? null;
-            let fileName = offline.fileName ?? null;
-            let photoHash = offline.photoHash ?? null;
-            let duplicateNotified = false;
+        if (offlineEntries.length) {
+          for (const offline of offlineEntries) {
+            const index = updatedEntries.findIndex((entry) => entry.id === offline.id);
+            if (index === -1) continue;
+            try {
+              let fileUrl = offline.fileUrl ?? null;
+              let fileName = offline.fileName ?? null;
+              let photoHash = offline.photoHash ?? null;
+              let duplicateNotified = false;
 
-            if (!fileUrl && offline.photoPreview) {
-              const response = await fetch(offline.photoPreview);
-              const blob = await response.blob();
-              const uploadFile = new File(
-                [blob],
-                fileName || `production-${offline.id}.jpg`,
-                { type: blob.type || "image/jpeg" },
-              );
-              photoHash = await computeFileHash(uploadFile);
+              if (!fileUrl && offline.photoPreview) {
+                const response = await fetch(offline.photoPreview);
+                const blob = await response.blob();
+                const uploadFile = new File(
+                  [blob],
+                  fileName || `production-${offline.id}.jpg`,
+                  { type: blob.type || "image/jpeg" },
+                );
+                photoHash = await computeFileHash(uploadFile);
 
-              const { data: duplicate, error: duplicateError } = await supabase
+                const { data: duplicate, error: duplicateError } = await supabase
+                  .from("wastex_production_logs")
+                  .select("file_url, file_name, id")
+                  .eq("photo_hash", photoHash)
+                  .maybeSingle();
+
+                if (!duplicateError && duplicate) {
+                  fileUrl = duplicate.file_url;
+                  fileName = duplicate.file_name;
+                  duplicateNotified = true;
+                } else {
+                  const ext = uploadFile.name.split(".").pop() || "jpg";
+                  const uploadPath = `mobile/${offline.logDate}-${crypto.randomUUID()}.${ext}`;
+                  const { error: uploadError } = await supabase
+                    .storage
+                    .from("production-photos")
+                    .upload(uploadPath, uploadFile, { upsert: false });
+                  if (uploadError) throw uploadError;
+                  const { data: publicUrl } = supabase
+                    .storage
+                    .from("production-photos")
+                    .getPublicUrl(uploadPath);
+                  fileUrl = publicUrl?.publicUrl ?? fileUrl;
+                  fileName = uploadPath;
+                }
+              }
+
+              const { data: inserted, error: insertError } = await supabase
                 .from("wastex_production_logs")
-                .select("file_url, file_name, id")
-                .eq("photo_hash", photoHash)
+                .insert({
+                  log_date: offline.logDate,
+                  tonnage: offline.tonnage,
+                  price_per_ton: offline.pricePerTon,
+                  total_amount: offline.totalAmount,
+                  client_name: offline.clientName,
+                  project_deliverable: offline.projectNotes ?? null,
+                  approval_name: null,
+                  file_name: fileName,
+                  file_url: fileUrl,
+                  photo_hash: photoHash,
+                  processing_status: "Mobile Entry",
+                })
+                .select()
                 .maybeSingle();
 
-              if (!duplicateError && duplicate) {
-                fileUrl = duplicate.file_url;
-                fileName = duplicate.file_name;
-                duplicateNotified = true;
-              } else {
-                const ext = uploadFile.name.split(".").pop() || "jpg";
-                const uploadPath = `mobile/${offline.logDate}-${crypto.randomUUID()}.${ext}`;
-                const { error: uploadError } = await supabase
-                  .storage
-                  .from("production-photos")
-                  .upload(uploadPath, uploadFile, { upsert: false });
-                if (uploadError) throw uploadError;
-                const { data: publicUrl } = supabase
-                  .storage
-                  .from("production-photos")
-                  .getPublicUrl(uploadPath);
-                fileUrl = publicUrl?.publicUrl ?? fileUrl;
-                fileName = uploadPath;
+              if (insertError) throw insertError;
+
+              updatedEntries[index] = {
+                ...offline,
+                id:
+                  inserted?.id !== undefined && inserted?.id !== null
+                    ? `remote-${inserted.id}`
+                    : offline.id,
+                fileUrl: fileUrl ?? offline.fileUrl,
+                fileName: fileName ?? offline.fileName,
+                photoHash: photoHash ?? offline.photoHash,
+                localOnly: false,
+                processingStatus: inserted?.processing_status ?? "Mobile Entry",
+              };
+
+              if (duplicateNotified) {
+                setProductionDuplicateAlert(
+                  "Duplicate photo detected. Existing upload reused to save storage.",
+                );
               }
+
+              syncedCount += 1;
+            } catch (error) {
+              console.error("Failed to sync production entry", error);
             }
-
-            const { data: inserted, error: insertError } = await supabase
-              .from("wastex_production_logs")
-              .insert({
-                log_date: offline.logDate,
-                tonnage: offline.tonnage,
-                price_per_ton: offline.pricePerTon,
-                total_amount: offline.totalAmount,
-                client_name: offline.clientName,
-                project_deliverable: offline.projectNotes ?? null,
-                approval_name: null,
-                file_name: fileName,
-                file_url: fileUrl,
-                photo_hash: photoHash,
-                processing_status: "Mobile Entry",
-              })
-              .select()
-              .maybeSingle();
-
-            if (insertError) throw insertError;
-
-            updatedEntries[index] = {
-              ...offline,
-              id:
-                inserted?.id !== undefined && inserted?.id !== null
-                  ? `remote-${inserted.id}`
-                  : offline.id,
-              fileUrl: fileUrl ?? offline.fileUrl,
-              fileName: fileName ?? offline.fileName,
-              photoHash: photoHash ?? offline.photoHash,
-              localOnly: false,
-              processingStatus: inserted?.processing_status ?? "Mobile Entry",
-            };
-
-            if (duplicateNotified) {
-              setProductionDuplicateAlert(
-                "Duplicate photo detected. Existing upload reused to save storage.",
-              );
-            }
-
-            syncedCount += 1;
-          } catch (error) {
-            console.error("Failed to sync production entry", error);
           }
         }
 
-        updatedEntries.sort(
-          (a, b) =>
-            normalizeDate(parseDateValue(b.logDate)).getTime() -
-            normalizeDate(parseDateValue(a.logDate)).getTime(),
-        );
+        if (hasOperations) {
+          await processPendingOperations();
+        }
 
-        setProductionEntries(updatedEntries);
-        persistProductionEntries(updatedEntries);
-
-        if (syncedCount > 0) {
-          setProductionNotice(
-            `Synced ${syncedCount} production entr${syncedCount > 1 ? "ies" : "y"} with Supabase.`,
+        if (offlineEntries.length) {
+          updatedEntries.sort(
+            (a, b) =>
+              normalizeDate(parseDateValue(b.logDate)).getTime() -
+              normalizeDate(parseDateValue(a.logDate)).getTime(),
           );
+
+          setProductionEntries(updatedEntries);
+          persistProductionEntries(updatedEntries);
+
+          if (syncedCount > 0) {
+            setProductionNotice(
+              `Synced ${syncedCount} production entr${syncedCount > 1 ? "ies" : "y"} with Supabase.`,
+            );
+          }
         }
       } finally {
         setProductionSyncing(false);
       }
     },
-    [computeFileHash, persistProductionEntries, productionEntries],
+    [
+      computeFileHash,
+      persistProductionEntries,
+      processPendingOperations,
+      productionEntries,
+      productionPendingOperations,
+    ],
   );
 
   const productionRange = useMemo(
@@ -954,8 +1395,10 @@ export default function EnhancedMobileDashboard() {
   }, [filteredProductionEntries]);
 
   const productionHasOffline = useMemo(
-    () => productionEntries.some((entry) => entry.localOnly),
-    [productionEntries],
+    () =>
+      productionEntries.some((entry) => entry.localOnly) ||
+      productionPendingOperations.length > 0,
+    [productionEntries, productionPendingOperations.length],
   );
 
   const productionFormTotal = useMemo(() => {
@@ -971,15 +1414,122 @@ export default function EnhancedMobileDashboard() {
   );
 
   const openProductionModal = useCallback(() => {
+    setEditingProductionEntry(null);
+    resetProductionForm();
     setShowProductionModal(true);
     setProductionDuplicateAlert(null);
     setProductionNotice(null);
-  }, []);
+  }, [resetProductionForm]);
 
   const closeProductionModal = useCallback(() => {
     setShowProductionModal(false);
+    setEditingProductionEntry(null);
     resetProductionForm();
+    setProductionPhotoDirty(false);
+    setProductionPhotoRemoved(false);
   }, [resetProductionForm]);
+
+  const openProductionEdit = useCallback(
+    (entry: ProductionEntry) => {
+      setEditingProductionEntry(entry);
+      setProductionForm({
+        date: entry.logDate,
+        tonnage: entry.tonnage ? String(entry.tonnage) : "",
+        pricePerTon: entry.pricePerTon ? String(entry.pricePerTon) : "",
+        client: PRODUCTION_CLIENTS.includes(entry.clientName)
+          ? entry.clientName
+          : "Custom",
+        customClient: PRODUCTION_CLIENTS.includes(entry.clientName)
+          ? ""
+          : entry.clientName,
+        notes: entry.projectNotes ?? "",
+      });
+      setProductionErrors({});
+      setProductionDuplicateAlert(null);
+      setProductionNotice(null);
+      setProductionPhotoFile(null);
+      const preview = entry.photoPreview || entry.fileUrl || null;
+      setProductionPhotoPreview(preview);
+      setProductionPhotoHash(entry.photoHash ?? null);
+      setProductionPhotoDirty(false);
+      setProductionPhotoRemoved(false);
+      setOpenProductionSwipeId(null);
+      setShowProductionModal(true);
+    },
+    [],
+  );
+
+  const handleProductionDelete = useCallback((entry: ProductionEntry) => {
+    setProductionDeleteTarget(entry);
+    setOpenProductionSwipeId(null);
+  }, []);
+
+  const cancelProductionDelete = useCallback(() => {
+    if (productionDeleting) return;
+    setProductionDeleteTarget(null);
+  }, [productionDeleting]);
+
+  const confirmProductionDelete = useCallback(async () => {
+    if (!productionDeleteTarget) return;
+    const entry = productionDeleteTarget;
+    setProductionDeleting(true);
+
+    const previousEntries = [...productionEntries];
+    setOpenProductionSwipeId(null);
+    updateProductionEntries((prev) => prev.filter((item) => item.id !== entry.id));
+
+    const supabaseId = getSupabaseId(entry.id);
+    const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+
+    if (!supabaseId) {
+      setProductionNotice("Production log deleted locally.");
+      setProductionDeleteTarget(null);
+      setProductionDeleting(false);
+      return;
+    }
+
+    try {
+      const { error: deleteError } = await supabase
+        .from("wastex_production_logs")
+        .delete()
+        .eq("id", supabaseId);
+      if (deleteError) throw deleteError;
+
+      setProductionNotice("Production log deleted.");
+      setProductionDeleteTarget(null);
+    } catch (error) {
+      console.error("Failed to delete production entry", error);
+      const shouldQueue =
+        isOffline ||
+        (error instanceof Error &&
+          error.message &&
+          error.message.toLowerCase().includes("fetch"));
+      if (shouldQueue) {
+        queueProductionOperation({
+          type: "delete",
+          entryId: entry.id,
+          timestamp: Date.now(),
+        });
+        setProductionNotice("Offline mode: delete queued and will sync when online.");
+        setProductionDeleteTarget(null);
+      } else {
+        setProductionEntries(previousEntries);
+        persistProductionEntries(previousEntries);
+        setProductionNotice("Failed to delete production log. Please try again.");
+      }
+    } finally {
+      setProductionDeleting(false);
+    }
+  }, [
+    productionDeleteTarget,
+    productionDeleting,
+    productionEntries,
+    queueProductionOperation,
+    persistProductionEntries,
+    setProductionEntries,
+    updateProductionEntries,
+    setProductionNotice,
+  ]);
 
   const openProductionCustomRange = useCallback(() => {
     if (!productionCustomStart) {
@@ -1030,31 +1580,196 @@ export default function EnhancedMobileDashboard() {
       return;
     }
 
+    const isEditing = Boolean(editingProductionEntry);
+    const existingEntry = editingProductionEntry ?? null;
+
     const baseEntry: ProductionEntry = {
-      id: crypto.randomUUID(),
+      id: isEditing && existingEntry ? existingEntry.id : crypto.randomUUID(),
       logDate: productionForm.date,
       tonnage,
       pricePerTon,
       totalAmount: tonnage * pricePerTon,
       clientName,
       projectNotes: productionForm.notes ? productionForm.notes.trim() : null,
-      fileUrl: null,
-      fileName: null,
-      photoHash: productionPhotoHash,
-      photoPreview: productionPhotoPreview,
-      processingStatus: "Mobile Entry",
-      localOnly: false,
+      fileUrl: isEditing && existingEntry ? existingEntry.fileUrl ?? null : null,
+      fileName: isEditing && existingEntry ? existingEntry.fileName ?? null : null,
+      photoHash:
+        productionPhotoDirty
+          ? productionPhotoRemoved
+            ? null
+            : productionPhotoHash ?? null
+          : isEditing && existingEntry
+          ? existingEntry.photoHash ?? null
+          : productionPhotoHash ?? null,
+      photoPreview:
+        productionPhotoDirty
+          ? productionPhotoRemoved
+            ? null
+            : productionPhotoPreview
+          : isEditing && existingEntry
+          ? existingEntry.photoPreview || existingEntry.fileUrl || null
+          : productionPhotoPreview,
+      processingStatus: existingEntry?.processingStatus ?? "Mobile Entry",
+      localOnly: existingEntry?.localOnly ?? false,
+      createdAt: existingEntry?.createdAt ?? null,
     };
+
+    if (productionPhotoDirty) {
+      if (productionPhotoRemoved) {
+        baseEntry.fileUrl = null;
+        baseEntry.fileName = null;
+      } else if (productionPhotoFile) {
+        baseEntry.fileUrl = null;
+        baseEntry.fileName = productionPhotoFile.name;
+      }
+    }
 
     setProductionSaving(true);
     let duplicateNotified = false;
+    const supabaseId = isEditing ? getSupabaseId(existingEntry?.id ?? null) : null;
+    const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
 
     try {
+      if (isEditing) {
+        if (existingEntry?.localOnly || !supabaseId) {
+          const updatedEntry: ProductionEntry = {
+            ...existingEntry,
+            ...baseEntry,
+            localOnly: existingEntry?.localOnly ?? false,
+          };
+          updateProductionEntries((prev) =>
+            prev.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry)),
+          );
+          setProductionNotice(
+            existingEntry?.localOnly
+              ? "Offline entry updated locally and will sync when online."
+              : "Production log updated locally and will sync when online.",
+          );
+          closeProductionModal();
+          if (!existingEntry?.localOnly && !supabaseId) {
+            queueProductionOperation({
+              type: "edit",
+              entryId: updatedEntry.id,
+              timestamp: Date.now(),
+              payload: {
+                log_date: baseEntry.logDate,
+                tonnage: baseEntry.tonnage,
+                price_per_ton: baseEntry.pricePerTon,
+                total_amount: baseEntry.totalAmount,
+                client_name: baseEntry.clientName,
+                project_deliverable: baseEntry.projectNotes ?? null,
+                processing_status: baseEntry.processingStatus ?? "Mobile Entry",
+              },
+              photo: productionPhotoDirty
+                ? productionPhotoRemoved
+                  ? { action: "remove" }
+                  : {
+                      action: "replace",
+                      dataUrl: productionPhotoPreview ?? null,
+                      fileName: productionPhotoFile ? productionPhotoFile.name : null,
+                      hash: productionPhotoHash ?? null,
+                    }
+                : { action: "unchanged", hash: baseEntry.photoHash ?? null },
+            });
+          }
+          return;
+        }
+
+        let fileUrl = existingEntry?.fileUrl ?? null;
+        let fileName = existingEntry?.fileName ?? null;
+        let photoHash = existingEntry?.photoHash ?? null;
+
+        if (productionPhotoDirty) {
+          if (productionPhotoRemoved) {
+            fileUrl = null;
+            fileName = null;
+            photoHash = null;
+          } else if (productionPhotoFile && productionPhotoHash) {
+            const { data: duplicate, error: duplicateError } = await supabase
+              .from("wastex_production_logs")
+              .select("file_url, file_name, id")
+              .eq("photo_hash", productionPhotoHash)
+              .maybeSingle();
+
+            if (!duplicateError && duplicate) {
+              fileUrl = duplicate.file_url;
+              fileName = duplicate.file_name;
+              photoHash = productionPhotoHash;
+              duplicateNotified = true;
+            } else {
+              const ext = productionPhotoFile.name.split(".").pop() || "jpg";
+              const uploadPath = `mobile/${baseEntry.logDate}-${crypto.randomUUID()}.${ext}`;
+              const { error: uploadError } = await supabase
+                .storage
+                .from("production-photos")
+                .upload(uploadPath, productionPhotoFile, { upsert: false });
+              if (uploadError) throw uploadError;
+              const { data: publicUrl } = supabase
+                .storage
+                .from("production-photos")
+                .getPublicUrl(uploadPath);
+              fileUrl = publicUrl?.publicUrl ?? null;
+              fileName = uploadPath;
+              photoHash = productionPhotoHash ?? null;
+            }
+          }
+        }
+
+        const updatePayload: Record<string, any> = {
+          log_date: baseEntry.logDate,
+          tonnage: baseEntry.tonnage,
+          price_per_ton: baseEntry.pricePerTon,
+          total_amount: baseEntry.totalAmount,
+          client_name: baseEntry.clientName,
+          project_deliverable: baseEntry.projectNotes ?? null,
+          processing_status: baseEntry.processingStatus ?? "Mobile Entry",
+        };
+
+        if (productionPhotoDirty) {
+          updatePayload.file_url = fileUrl;
+          updatePayload.file_name = fileName;
+          updatePayload.photo_hash = photoHash;
+        }
+
+        const { error: updateError } = await supabase
+          .from("wastex_production_logs")
+          .update(updatePayload)
+          .eq("id", supabaseId);
+        if (updateError) throw updateError;
+
+        const updatedEntry: ProductionEntry = {
+          ...existingEntry,
+          ...baseEntry,
+          fileUrl,
+          fileName,
+          photoHash,
+          photoPreview:
+            productionPhotoDirty && productionPhotoRemoved
+              ? null
+              : productionPhotoDirty && productionPhotoFile
+              ? productionPhotoPreview
+              : baseEntry.photoPreview,
+          localOnly: false,
+        };
+
+        updateProductionEntries((prev) =>
+          prev.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry)),
+        );
+        setProductionNotice("Production log updated successfully.");
+        if (duplicateNotified) {
+          setProductionDuplicateAlert(
+            "Duplicate photo detected. Existing upload reused to save storage.",
+          );
+        }
+        closeProductionModal();
+        return;
+      }
+
       let fileUrl = baseEntry.fileUrl;
       let fileName = baseEntry.fileName;
-      let photoHash = productionPhotoHash;
+      let photoHash = productionPhotoRemoved ? null : productionPhotoHash;
 
-      if (productionPhotoFile && productionPhotoHash) {
+      if (productionPhotoFile && !productionPhotoRemoved && productionPhotoHash) {
         const { data: duplicate, error: duplicateError } = await supabase
           .from("wastex_production_logs")
           .select("file_url, file_name, id")
@@ -1094,7 +1809,7 @@ export default function EnhancedMobileDashboard() {
           approval_name: null,
           file_name: fileName,
           file_url: fileUrl,
-          photo_hash: photoHash,
+          photo_hash: productionPhotoRemoved ? null : productionPhotoHash,
           processing_status: "Mobile Entry",
         })
         .select()
@@ -1110,13 +1825,18 @@ export default function EnhancedMobileDashboard() {
             : baseEntry.id,
         fileUrl: fileUrl ?? baseEntry.fileUrl,
         fileName: fileName ?? baseEntry.fileName,
-        photoHash: photoHash ?? baseEntry.photoHash,
+        photoHash: productionPhotoRemoved
+          ? null
+          : productionPhotoHash ?? baseEntry.photoHash ?? null,
         photoPreview: productionPhotoPreview,
         localOnly: false,
         processingStatus: inserted?.processing_status ?? "Mobile Entry",
       };
 
-      updateProductionEntries((prev) => [savedEntry, ...prev.filter((entry) => entry.id !== savedEntry.id)]);
+      updateProductionEntries((prev) => [
+        savedEntry,
+        ...prev.filter((entry) => entry.id !== savedEntry.id),
+      ]);
       setProductionNotice("Production log synced successfully.");
       if (duplicateNotified) {
         setProductionDuplicateAlert(
@@ -1126,33 +1846,122 @@ export default function EnhancedMobileDashboard() {
       closeProductionModal();
     } catch (error) {
       console.error("Failed to submit production log", error);
-      const offlineEntry: ProductionEntry = {
-        ...baseEntry,
-        fileUrl: baseEntry.fileUrl,
-        fileName: baseEntry.fileName ?? (productionPhotoFile ? productionPhotoFile.name : null),
-        photoHash: productionPhotoHash ?? null,
-        photoPreview: productionPhotoPreview,
-        localOnly: true,
-      };
+      if (isEditing && existingEntry && supabaseId) {
+        const shouldQueue =
+          isOffline ||
+          (error instanceof Error &&
+            error.message &&
+            error.message.toLowerCase().includes("fetch"));
+        if (shouldQueue) {
+          const optimisticEntry: ProductionEntry = {
+            ...existingEntry,
+            ...baseEntry,
+            fileUrl:
+              productionPhotoDirty && productionPhotoRemoved
+                ? null
+                : productionPhotoDirty && productionPhotoFile
+                ? null
+                : existingEntry.fileUrl ?? null,
+            fileName:
+              productionPhotoDirty && productionPhotoRemoved
+                ? null
+                : productionPhotoDirty && productionPhotoFile
+                ? productionPhotoFile.name
+                : existingEntry.fileName ?? null,
+            photoHash:
+              productionPhotoDirty && productionPhotoRemoved
+                ? null
+                : productionPhotoDirty && productionPhotoFile
+                ? productionPhotoHash ?? null
+                : existingEntry.photoHash ?? null,
+            photoPreview:
+              productionPhotoDirty && productionPhotoRemoved
+                ? null
+                : productionPhotoDirty && productionPhotoFile
+                ? productionPhotoPreview
+                : baseEntry.photoPreview,
+          };
+          updateProductionEntries((prev) =>
+            prev.map((entry) => (entry.id === optimisticEntry.id ? optimisticEntry : entry)),
+          );
+          queueProductionOperation({
+            type: "edit",
+            entryId: existingEntry.id,
+            timestamp: Date.now(),
+            payload: {
+              log_date: baseEntry.logDate,
+              tonnage: baseEntry.tonnage,
+              price_per_ton: baseEntry.pricePerTon,
+              total_amount: baseEntry.totalAmount,
+              client_name: baseEntry.clientName,
+              project_deliverable: baseEntry.projectNotes ?? null,
+              processing_status: baseEntry.processingStatus ?? "Mobile Entry",
+            },
+            photo: productionPhotoDirty
+              ? productionPhotoRemoved
+                ? { action: "remove" }
+                : {
+                    action: "replace",
+                    dataUrl: productionPhotoPreview ?? null,
+                    fileName: productionPhotoFile
+                      ? productionPhotoFile.name
+                      : existingEntry.fileName ?? null,
+                    hash: productionPhotoFile
+                      ? productionPhotoHash ?? null
+                      : existingEntry.photoHash ?? null,
+                  }
+              : { action: "unchanged", hash: baseEntry.photoHash ?? null },
+          });
+          setProductionNotice("Offline mode: edit queued and will sync when online.");
+          closeProductionModal();
+        } else {
+          setProductionNotice("Failed to update production log. Please try again.");
+        }
+      } else {
+        const offlineEntry: ProductionEntry = {
+          ...baseEntry,
+          id: baseEntry.id,
+          fileUrl: productionPhotoRemoved ? null : baseEntry.fileUrl,
+          fileName: productionPhotoRemoved
+            ? null
+            : baseEntry.fileName ?? (productionPhotoFile ? productionPhotoFile.name : null),
+          photoHash: productionPhotoRemoved
+            ? null
+            : productionPhotoHash ?? baseEntry.photoHash ?? null,
+          photoPreview:
+            productionPhotoRemoved
+              ? null
+              : productionPhotoPreview ?? baseEntry.photoPreview ?? null,
+          localOnly: true,
+        };
 
-      updateProductionEntries((prev) => [offlineEntry, ...prev]);
-      setProductionNotice("Offline mode: entry saved locally and will sync when online.");
-      closeProductionModal();
-      setTimeout(() => {
-        syncOfflineEntries();
-      }, 500);
+        updateProductionEntries((prev) => [offlineEntry, ...prev]);
+        setProductionNotice("Offline mode: entry saved locally and will sync when online.");
+        closeProductionModal();
+        setTimeout(() => {
+          syncOfflineEntries();
+        }, 500);
+      }
     } finally {
       setProductionSaving(false);
     }
   }, [
     closeProductionModal,
+    editingProductionEntry,
     productionForm,
+    productionPhotoDirty,
     productionPhotoFile,
     productionPhotoHash,
     productionPhotoPreview,
+    productionPhotoRemoved,
+    queueProductionOperation,
+    setProductionDuplicateAlert,
+    setProductionErrors,
+    setProductionNotice,
     syncOfflineEntries,
     updateProductionEntries,
   ]);
+
 
   const handleProductionPeriodSelect = useCallback(
     (option: ProductionPeriod) => {
@@ -1168,7 +1977,8 @@ export default function EnhancedMobileDashboard() {
 
   useEffect(() => {
     loadProductionEntriesFromStorage();
-  }, [loadProductionEntriesFromStorage]);
+    loadProductionOperationsFromStorage();
+  }, [loadProductionEntriesFromStorage, loadProductionOperationsFromStorage]);
 
   useEffect(() => {
     fetchProductionEntries();
@@ -1185,6 +1995,18 @@ export default function EnhancedMobileDashboard() {
   }, [fetchProductionEntries, syncOfflineEntries]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('[data-production-swipe]')) {
+        setOpenProductionSwipeId(null);
+      }
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+
+  useEffect(() => {
     if (reportType !== "production") {
       setShowProductionModal(false);
       setShowProductionCustomModal(false);
@@ -1197,10 +2019,13 @@ export default function EnhancedMobileDashboard() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!navigator.onLine) return;
-    if (productionEntries.some((entry) => entry.localOnly)) {
+    if (
+      productionEntries.some((entry) => entry.localOnly) ||
+      productionPendingOperations.length
+    ) {
       syncOfflineEntries(productionEntries);
     }
-  }, [productionEntries, syncOfflineEntries]);
+  }, [productionEntries, productionPendingOperations.length, syncOfflineEntries]);
 
   // Initialize speech recognition
   useEffect(() => {
@@ -3207,17 +4032,18 @@ export default function EnhancedMobileDashboard() {
             ) : visibleProductionEntries.length ? (
               <div style={{ display: 'grid', gap: '12px' }}>
                 {visibleProductionEntries.map((entry) => (
-                  <div
+                  <ProductionSwipeItem
                     key={entry.id}
-                    style={{
-                      display: 'flex',
-                      gap: '12px',
-                      alignItems: 'center',
-                      border: `1px solid ${BRAND_COLORS.gray[200]}`,
-                      borderRadius: '12px',
-                      padding: '12px',
-                      background: 'rgba(248,250,252,0.9)'
+                    entry={entry}
+                    isOpen={openProductionSwipeId === entry.id}
+                    onOpen={() => setOpenProductionSwipeId(entry.id)}
+                    onClose={() => {
+                      if (openProductionSwipeId === entry.id) {
+                        setOpenProductionSwipeId(null);
+                      }
                     }}
+                    onEdit={() => openProductionEdit(entry)}
+                    onDelete={() => handleProductionDelete(entry)}
                   >
                     <div style={{ flex: 1 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
@@ -3239,7 +4065,7 @@ export default function EnhancedMobileDashboard() {
                           {entry.projectNotes}
                         </div>
                       )}
-                      {entry.localOnly && (
+                      {(entry.localOnly || productionPendingOperations.some((op) => op.entryId === entry.id)) && (
                         <div style={{ marginTop: '8px', display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: BRAND_COLORS.warning, fontWeight: 600 }}>
                           <AlertTriangle size={12} /> Pending Sync
                         </div>
@@ -3247,7 +4073,9 @@ export default function EnhancedMobileDashboard() {
                     </div>
                     {(entry.fileUrl || entry.photoPreview) && (
                       <button
-                        onClick={() => setShowProductionPhoto(entry.fileUrl || entry.photoPreview || null)}
+                        onClick={() =>
+                          setShowProductionPhoto(entry.fileUrl || entry.photoPreview || null)
+                        }
                         style={{
                           border: 'none',
                           background: 'rgba(86,182,233,0.15)',
@@ -3256,6 +4084,7 @@ export default function EnhancedMobileDashboard() {
                           cursor: 'pointer',
                           overflow: 'hidden'
                         }}
+                        aria-label={`View production photo for ${format(parseDateValue(entry.logDate), 'MMM d, yyyy')}`}
                       >
                         <img
                           src={entry.fileUrl || entry.photoPreview || ''}
@@ -3264,7 +4093,7 @@ export default function EnhancedMobileDashboard() {
                         />
                       </button>
                     )}
-                  </div>
+                  </ProductionSwipeItem>
                 ))}
               </div>
             ) : (
@@ -5196,7 +6025,12 @@ export default function EnhancedMobileDashboard() {
                       width: 'fit-content'
                     }}
                   >
-                    <Camera size={16} /> Add Photo
+                    <Camera size={16} />{' '}
+                    {productionPhotoPreview
+                      ? 'Change Photo'
+                      : editingProductionEntry
+                      ? 'Add Photo'
+                      : 'Add Photo'}
                   </label>
                   {productionPhotoPreview ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -5207,7 +6041,7 @@ export default function EnhancedMobileDashboard() {
                       />
                       <button
                         type="button"
-                        onClick={clearProductionPhoto}
+                        onClick={removeProductionPhoto}
                         style={{
                           border: 'none',
                           background: 'none',
@@ -5218,6 +6052,10 @@ export default function EnhancedMobileDashboard() {
                       >
                         Remove
                       </button>
+                    </div>
+                  ) : productionPhotoRemoved ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: BRAND_COLORS.danger, fontSize: '12px', fontWeight: 600 }}>
+                      <ImageIcon size={16} /> Photo will be removed on save
                     </div>
                   ) : (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#64748b', fontSize: '12px' }}>
@@ -5409,6 +6247,83 @@ export default function EnhancedMobileDashboard() {
               alt="Production detail"
               style={{ display: 'block', maxWidth: '80vw', maxHeight: '80vh', borderRadius: '12px' }}
             />
+          </div>
+        </div>
+      )}
+
+      {productionDeleteTarget && (
+        <div
+          onClick={() => !productionDeleting && cancelProductionDelete()}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15,23,42,0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2300,
+            padding: '24px'
+          }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: '100%',
+              maxWidth: '420px',
+              background: 'white',
+              borderRadius: '16px',
+              padding: '24px',
+              boxShadow: '0 24px 60px rgba(15,23,42,0.18)',
+              border: `1px solid ${BRAND_COLORS.gray[200]}`
+            }}
+            role="dialog"
+            aria-modal="true"
+          >
+            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', marginBottom: '12px' }}>
+              Delete Production Entry
+            </h3>
+            <p style={{ fontSize: '14px', color: '#475569', marginBottom: '20px', lineHeight: 1.5 }}>
+              Are you sure you want to delete the production entry for{' '}
+              <strong>{productionDeleteTarget.clientName}</strong> on{' '}
+              {format(parseDateValue(productionDeleteTarget.logDate), 'MMM d, yyyy')}? This action
+              cannot be undone.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button
+                type="button"
+                onClick={cancelProductionDelete}
+                disabled={productionDeleting}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: '10px',
+                  border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                  background: 'white',
+                  cursor: productionDeleting ? 'not-allowed' : 'pointer',
+                  fontWeight: 600,
+                  color: '#0f172a',
+                  opacity: productionDeleting ? 0.6 : 1
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmProductionDelete}
+                disabled={productionDeleting}
+                style={{
+                  padding: '10px 18px',
+                  borderRadius: '10px',
+                  border: 'none',
+                  background: BRAND_COLORS.danger,
+                  color: 'white',
+                  fontWeight: 700,
+                  cursor: productionDeleting ? 'not-allowed' : 'pointer',
+                  opacity: productionDeleting ? 0.8 : 1
+                }}
+              >
+                {productionDeleting ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
           </div>
         </div>
       )}
