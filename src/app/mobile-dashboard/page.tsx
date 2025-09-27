@@ -19,8 +19,30 @@ import {
   Mic,
   Bot,
   MessageCircle,
+  Download,
+  RefreshCw,
+  Plus,
+  Package,
+  DollarSign,
+  BarChart3,
+  FileText,
+  Users,
   type LucideIcon,
 } from "lucide-react";
+
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+} from "recharts";
 
 import { supabase } from "@/lib/supabaseClient";
 
@@ -120,6 +142,59 @@ interface JournalEntryLine {
   credit: number | null;
 }
 
+interface ProductionLog {
+  id: string;
+  year: number;
+  month: number;
+  log_date: string;
+  tonnage: number;
+  price_per_ton: number;
+  total_amount: number;
+  client_name: string;
+  project_deliverable: string;
+  approval_name: string;
+  file_name: string;
+  folder_path: string;
+  file_url: string;
+  last_modified: string;
+  processing_status: string;
+  created_at: string;
+}
+
+type SupabaseProductionLog = {
+  id: number | string;
+  log_date?: string | null;
+  year?: number | null;
+  month?: number | null;
+  tonnage?: number | string | null;
+  price_per_ton?: number | string | null;
+  total_amount?: number | string | null;
+  client_name?: string | null;
+  project_deliverable?: string | null;
+  approval_name?: string | null;
+  file_name?: string | null;
+  folder_path?: string | null;
+  file_url?: string | null;
+  last_modified?: string | null;
+  processing_status?: string | null;
+  created_at?: string | null;
+};
+
+interface ProductionKPIs {
+  totalTonnage: number;
+  totalRevenue: number;
+  avgPricePerTon: number;
+  totalLogs: number;
+  monthlyGrowth: number;
+}
+
+interface ProductionChartData {
+  date: string;
+  tonnage: number;
+  revenue: number;
+  month?: string;
+}
+
 const getMonthName = (m: number) =>
   new Date(0, m - 1).toLocaleString("en-US", { month: "long" });
 
@@ -151,6 +226,32 @@ type Insight = {
   icon: LucideIcon;
   type: "success" | "warning" | "info";
 };
+
+const WasteXLogo = ({ className = "w-8 h-8" }: { className?: string }) => (
+  <div className={`${className} flex items-center justify-center relative`}>
+    <svg viewBox="0 0 120 120" className="w-full h-full">
+      <circle cx="60" cy="60" r="55" fill="#E2E8F0" stroke="#CBD5E1" strokeWidth="2" />
+      <circle cx="60" cy="60" r="42" fill={BRAND_COLORS.primary} />
+      <g fill="white">
+        <rect x="45" y="40" width="30" height="8" rx="2" />
+        <rect x="35" y="55" width="50" height="6" rx="2" />
+        <rect x="40" y="68" width="40" height="6" rx="2" />
+        <rect x="45" y="81" width="30" height="6" rx="2" />
+      </g>
+      <text
+        x="60"
+        y="102"
+        textAnchor="middle"
+        fill="white"
+        fontSize="9"
+        fontWeight="bold"
+        fontFamily="Arial, sans-serif"
+      >
+        WasteX
+      </text>
+    </svg>
+  </div>
+);
 
 type RankingMetric =
   | "revenue"
@@ -195,7 +296,7 @@ const insights: Insight[] = [
 export default function EnhancedMobileDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reportType, setReportType] = useState<
-    "pl" | "cf" | "ar" | "ap" | "payroll"
+    "pl" | "cf" | "ar" | "ap" | "payroll" | "production"
   >("pl");
   const [reportPeriod, setReportPeriod] = useState<
     "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly"
@@ -233,6 +334,199 @@ export default function EnhancedMobileDashboard() {
   const [employeeBreakdown, setEmployeeBreakdown] = useState<Record<string, { total: number; payments: Transaction[] }>>({});
   const [employeeTotals, setEmployeeTotals] = useState<Category[]>([]);
 
+  const [productionLogs, setProductionLogs] = useState<ProductionLog[]>([]);
+  const [productionLoading, setProductionLoading] = useState(false);
+  const [productionError, setProductionError] = useState<string | null>(null);
+  const [productionSelectedMonth, setProductionSelectedMonth] = useState<number>(new Date().getMonth() + 1);
+  const [productionSelectedYear, setProductionSelectedYear] = useState<number>(new Date().getFullYear());
+  const [productionViewMode, setProductionViewMode] = useState<"monthly" | "daily">("monthly");
+  const [productionNotification, setProductionNotification] = useState<{
+    show: boolean;
+    message: string;
+    type: "success" | "error" | "info";
+  }>({ show: false, message: "", type: "info" });
+
+  const showProductionNotification = useCallback(
+    (message: string, type: "success" | "error" | "info" = "info") => {
+      setProductionNotification({ show: true, message, type });
+      setTimeout(() => {
+        setProductionNotification({ show: false, message: "", type: "info" });
+      }, 3000);
+    },
+    [],
+  );
+
+  const normalizeProductionLogs = useCallback(
+    (logs: SupabaseProductionLog[]): ProductionLog[] =>
+      logs.map((log) => {
+        const id = log.id ? String(log.id) : `${log.log_date ?? "unknown"}-${log.client_name ?? "client"}`;
+        const logDateRaw = log.log_date ?? null;
+        const parsedDate = logDateRaw ? new Date(logDateRaw) : null;
+
+        const tonnageValue = Number(log.tonnage ?? 0);
+        const tonnage = Number.isFinite(tonnageValue) ? tonnageValue : 0;
+
+        const pricePerTonValue = Number(log.price_per_ton ?? 0);
+        const pricePerTon = Number.isFinite(pricePerTonValue) ? pricePerTonValue : 0;
+
+        const totalAmountValue = Number(
+          log.total_amount ?? (Number.isFinite(tonnage * pricePerTon) ? tonnage * pricePerTon : 0),
+        );
+        const totalAmount = Number.isFinite(totalAmountValue) ? totalAmountValue : tonnage * pricePerTon;
+
+        return {
+          id,
+          year:
+            typeof log.year === "number" && !Number.isNaN(log.year)
+              ? log.year
+              : parsedDate?.getFullYear() ?? productionSelectedYear,
+          month:
+            typeof log.month === "number" && !Number.isNaN(log.month)
+              ? log.month
+              : parsedDate
+              ? parsedDate.getMonth() + 1
+              : productionSelectedMonth,
+          log_date: parsedDate ? parsedDate.toISOString() : logDateRaw ?? new Date().toISOString(),
+          tonnage,
+          price_per_ton: pricePerTon,
+          total_amount: totalAmount,
+          client_name: log.client_name ?? "Unknown Client",
+          project_deliverable: log.project_deliverable ?? "N/A",
+          approval_name: log.approval_name ?? "Pending Approval",
+          file_name: log.file_name ?? "N/A",
+          folder_path: log.folder_path ?? "",
+          file_url: log.file_url ?? "#",
+          last_modified: log.last_modified ?? "",
+          processing_status: log.processing_status ?? "Pending",
+          created_at: log.created_at ?? "",
+        };
+      }),
+    [productionSelectedYear, productionSelectedMonth],
+  );
+
+  const loadProductionData = useCallback(async () => {
+    console.group("🚛 WasteX Production Logs Fetch (Mobile)");
+    try {
+      setProductionLoading(true);
+      setProductionError(null);
+
+      const { error: connectionError, count: connectionCount } = await supabase
+        .from("wastex_production_logs")
+        .select("id", { count: "exact", head: true });
+
+      if (connectionError) {
+        throw new Error(`Supabase connection test failed: ${connectionError.message}`);
+      }
+
+      const { data, error: fetchError, status } = await supabase
+        .from("wastex_production_logs")
+        .select("*")
+        .order("log_date", { ascending: false });
+
+      if (fetchError) {
+        console.error("❌ Supabase fetch error:", { status, fetchError });
+        throw new Error(`Failed to fetch production logs: ${fetchError.message}`);
+      }
+
+      const normalized = normalizeProductionLogs((data ?? []) as SupabaseProductionLog[]);
+
+      if (normalized.length > 0) {
+        setProductionLogs(normalized);
+        showProductionNotification("Production data loaded successfully", "success");
+      } else {
+        setProductionLogs([]);
+        if (typeof connectionCount === "number" && connectionCount > 0) {
+          showProductionNotification("No accessible production logs returned. Check filters or RLS policies.", "info");
+        } else {
+          showProductionNotification("No production logs found. Add new entries to get started.", "info");
+        }
+      }
+    } catch (err) {
+      console.error("🚨 Error loading production data from Supabase:", err);
+      const message = err instanceof Error ? err.message : "Failed to load production data. Using demo data.";
+      setProductionError(message);
+
+      setProductionLogs([
+        {
+          id: "1",
+          year: 2025,
+          month: 9,
+          log_date: "2025-09-26",
+          tonnage: 80,
+          price_per_ton: 20,
+          total_amount: 1600,
+          client_name: "Panzarella",
+          project_deliverable: "MRF",
+          approval_name: "Michael Cruz",
+          file_name: "09.26.2025 - 80 Tons.jpg",
+          folder_path: "Wastex - Production Log/2025/09.2025",
+          file_url: "https://drive.google.com/file/d/example1",
+          last_modified: "2025-09-27T07:42:00Z",
+          processing_status: "Processed",
+          created_at: "2025-09-27T07:42:00Z",
+        },
+        {
+          id: "2",
+          year: 2025,
+          month: 9,
+          log_date: "2025-09-25",
+          tonnage: 75,
+          price_per_ton: 20,
+          total_amount: 1500,
+          client_name: "Metro Waste",
+          project_deliverable: "Collection",
+          approval_name: "Sarah Johnson",
+          file_name: "09.25.2025 - 75 Tons.jpg",
+          folder_path: "Wastex - Production Log/2025/09.2025",
+          file_url: "https://drive.google.com/file/d/example2",
+          last_modified: "2025-09-27T07:34:00Z",
+          processing_status: "Processed",
+          created_at: "2025-09-27T07:34:00Z",
+        },
+        {
+          id: "3",
+          year: 2025,
+          month: 9,
+          log_date: "2025-09-24",
+          tonnage: 176,
+          price_per_ton: 20,
+          total_amount: 3520,
+          client_name: "City Municipal",
+          project_deliverable: "Bulk Collection",
+          approval_name: "Mike Davis",
+          file_name: "09.24.2025 - 176 Tons.jpg",
+          folder_path: "Wastex - Production Log/2025/09.2025",
+          file_url: "https://drive.google.com/file/d/example3",
+          last_modified: "2025-09-27T07:34:00Z",
+          processing_status: "Processed",
+          created_at: "2025-09-27T07:34:00Z",
+        },
+        {
+          id: "4",
+          year: 2025,
+          month: 9,
+          log_date: "2025-09-23",
+          tonnage: 111,
+          price_per_ton: 20,
+          total_amount: 2220,
+          client_name: "Industrial Services",
+          project_deliverable: "Commercial",
+          approval_name: "Lisa Brown",
+          file_name: "09.23.2025 - 111 Tons.jpg",
+          folder_path: "Wastex - Production Log/2025/09.2025",
+          file_url: "https://drive.google.com/file/d/example4",
+          last_modified: "2025-09-27T07:35:00Z",
+          processing_status: "Processed",
+          created_at: "2025-09-27T07:35:00Z",
+        },
+      ]);
+      showProductionNotification("Using demo data - check Supabase connection", "error");
+    } finally {
+      setProductionLoading(false);
+      console.groupEnd();
+    }
+  }, [normalizeProductionLogs, showProductionNotification]);
+
   // AI CFO States
   const [isListening, setIsListening] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -242,6 +536,12 @@ export default function EnhancedMobileDashboard() {
   const [recognition, setRecognition] = useState<any>(null);
 
   const buttonRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (reportType === "production") {
+      loadProductionData();
+    }
+  }, [reportType, loadProductionData]);
 
   // Initialize speech recognition
   useEffect(() => {
@@ -554,6 +854,11 @@ export default function EnhancedMobileDashboard() {
 
   useEffect(() => {
     const load = async () => {
+      if (reportType === "production") {
+        setProperties([]);
+        return;
+      }
+
       if (reportType === "ap") {
         const { data } = await supabase
           .from("ap_aging")
@@ -1349,6 +1654,808 @@ export default function EnhancedMobileDashboard() {
     }
   };
 
+  const formatProductionCurrency = (amount: number): string =>
+    new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(amount);
+
+  const formatProductionDate = (dateString: string): string =>
+    new Date(dateString).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+
+  const formatProductionTonnage = (tonnage: number): string => `${tonnage.toFixed(1)} tons`;
+
+  const productionFilteredData = useMemo(() => {
+    return productionLogs.filter((log) => {
+      if (productionViewMode === "monthly") {
+        return log.year === productionSelectedYear && log.month === productionSelectedMonth;
+      }
+      return log.year === productionSelectedYear;
+    });
+  }, [productionLogs, productionSelectedYear, productionSelectedMonth, productionViewMode]);
+
+  const productionKPIs = useMemo<ProductionKPIs>(() => {
+    const totalTonnage = productionFilteredData.reduce((sum, log) => sum + log.tonnage, 0);
+    const totalRevenue = productionFilteredData.reduce((sum, log) => sum + log.total_amount, 0);
+    const avgPricePerTon = totalTonnage > 0 ? totalRevenue / totalTonnage : 0;
+    const totalLogs = productionFilteredData.length;
+
+    const previousMonth = productionSelectedMonth === 1 ? 12 : productionSelectedMonth - 1;
+    const previousYear = productionSelectedMonth === 1 ? productionSelectedYear - 1 : productionSelectedYear;
+    const previousData = productionLogs.filter(
+      (log) => log.year === previousYear && log.month === previousMonth,
+    );
+    const previousRevenue = previousData.reduce((sum, log) => sum + log.total_amount, 0);
+    const monthlyGrowth = previousRevenue > 0 ? ((totalRevenue - previousRevenue) / previousRevenue) * 100 : 0;
+
+    return {
+      totalTonnage,
+      totalRevenue,
+      avgPricePerTon,
+      totalLogs,
+      monthlyGrowth,
+    };
+  }, [productionFilteredData, productionLogs, productionSelectedMonth, productionSelectedYear]);
+
+  const productionChartData = useMemo<ProductionChartData[]>(() => {
+    if (productionViewMode === "daily") {
+      return productionFilteredData
+        .map((log) => ({
+          date: formatProductionDate(log.log_date),
+          tonnage: log.tonnage,
+          revenue: log.total_amount,
+        }))
+        .reverse();
+    }
+
+    const monthlyData: Record<string, { tonnage: number; revenue: number }> = {};
+    productionLogs.forEach((log) => {
+      const key = `${log.year}-${log.month.toString().padStart(2, "0")}`;
+      if (!monthlyData[key]) {
+        monthlyData[key] = { tonnage: 0, revenue: 0 };
+      }
+      monthlyData[key].tonnage += log.tonnage;
+      monthlyData[key].revenue += log.total_amount;
+    });
+
+    return Object.entries(monthlyData)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-12)
+      .map(([key, data]) => ({
+        date: key,
+        month: new Date(`${key}-01`).toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
+        tonnage: data.tonnage,
+        revenue: data.revenue,
+      }));
+  }, [productionViewMode, productionFilteredData, productionLogs]);
+
+  const productionClientDistribution = useMemo(() => {
+    const clientData: Record<string, number> = {};
+    productionFilteredData.forEach((log) => {
+      const client = log.client_name || "Unknown Client";
+      clientData[client] = (clientData[client] || 0) + log.total_amount;
+    });
+
+    return Object.entries(clientData)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5);
+  }, [productionFilteredData]);
+
+  const productionPieColors = useMemo(
+    () => [
+      BRAND_COLORS.primary,
+      BRAND_COLORS.secondary,
+      BRAND_COLORS.tertiary,
+      BRAND_COLORS.success,
+      BRAND_COLORS.warning,
+    ],
+    [],
+  );
+
+  const renderReportTypeSelector = () => (
+    <div
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: "rgba(15, 23, 42, 0.55)",
+        backdropFilter: "blur(8px)",
+        padding: "24px",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "flex-start",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        style={{
+          background: "white",
+          borderRadius: "16px",
+          padding: "24px",
+          width: "100%",
+          maxWidth: "420px",
+          boxShadow: "0 20px 40px rgba(15, 23, 42, 0.18)",
+          animation: "slideDown 0.3s ease-out",
+        }}
+      >
+        <div style={{ marginBottom: "16px" }}>
+          <label style={{ display: "block", marginBottom: "8px", fontWeight: 600, color: BRAND_COLORS.accent }}>
+            Report Type
+          </label>
+          <select
+            style={{
+              width: "100%",
+              padding: "12px",
+              border: `2px solid ${BRAND_COLORS.gray[200]}`,
+              borderRadius: "8px",
+              fontSize: "16px",
+            }}
+            value={reportType}
+            onChange={(e) =>
+              setReportType(
+                e.target.value as "pl" | "cf" | "ar" | "ap" | "payroll" | "production",
+              )
+            }
+          >
+            <option value="pl">P&L Statement</option>
+            <option value="cf">Cash Flow Statement</option>
+            <option value="payroll">Payroll</option>
+            <option value="ar">A/R Aging Report</option>
+            <option value="ap">A/P Aging Report</option>
+            <option value="production">Production</option>
+          </select>
+        </div>
+        {reportType === "production" ? (
+          <>
+            <div style={{ marginBottom: "16px" }}>
+              <label style={{ display: "block", marginBottom: "8px", fontWeight: 600, color: BRAND_COLORS.accent }}>
+                View Mode
+              </label>
+              <select
+                style={{
+                  width: "100%",
+                  padding: "12px",
+                  border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                  borderRadius: "8px",
+                  fontSize: "16px",
+                }}
+                value={productionViewMode}
+                onChange={(e) => setProductionViewMode(e.target.value as "monthly" | "daily")}
+              >
+                <option value="monthly">Monthly View</option>
+                <option value="daily">Daily View</option>
+              </select>
+            </div>
+            <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+              <select
+                style={{
+                  flex: 1,
+                  padding: "12px",
+                  border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                  borderRadius: "8px",
+                  fontSize: "16px",
+                }}
+                value={productionSelectedMonth}
+                onChange={(e) => setProductionSelectedMonth(Number(e.target.value))}
+              >
+                {Array.from({ length: 12 }, (_, i) => (
+                  <option key={i + 1} value={i + 1}>
+                    {new Date(0, i).toLocaleString("en", { month: "long" })}
+                  </option>
+                ))}
+              </select>
+              <select
+                style={{
+                  flex: 1,
+                  padding: "12px",
+                  border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                  borderRadius: "8px",
+                  fontSize: "16px",
+                }}
+                value={productionSelectedYear}
+                onChange={(e) => setProductionSelectedYear(Number(e.target.value))}
+              >
+                {Array.from({ length: 3 }, (_, i) => {
+                  const currentYear = new Date().getFullYear() - 1 + i;
+                  return (
+                    <option key={currentYear} value={currentYear}>
+                      {currentYear}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <button
+              style={{
+                width: "100%",
+                padding: "12px",
+                marginBottom: "16px",
+                background: BRAND_COLORS.gray[200],
+                border: "none",
+                borderRadius: "8px",
+                fontSize: "16px",
+                fontWeight: 600,
+                color: BRAND_COLORS.primary,
+              }}
+              onClick={loadProductionData}
+            >
+              Refresh Production Data
+            </button>
+          </>
+        ) : (
+          reportType !== "ar" &&
+          reportType !== "ap" && (
+            <>
+              <div style={{ marginBottom: "16px" }}>
+                <label style={{ display: "block", marginBottom: "8px", fontWeight: 600, color: BRAND_COLORS.accent }}>
+                  Report Period
+                </label>
+                <select
+                  style={{
+                    width: "100%",
+                    padding: "12px",
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: "8px",
+                    fontSize: "16px",
+                  }}
+                  value={reportPeriod}
+                  onChange={(e) =>
+                    setReportPeriod(
+                      e.target.value as "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly",
+                    )
+                  }
+                >
+                  <option value="Monthly">Monthly</option>
+                  <option value="Custom">Custom Range</option>
+                  <option value="Year to Date">Year to Date</option>
+                  <option value="Trailing 12">Trailing 12 Months</option>
+                  <option value="Quarterly">Quarterly</option>
+                </select>
+              </div>
+              {reportPeriod === "Custom" ? (
+                <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+                  <input
+                    type="date"
+                    style={{
+                      flex: 1,
+                      padding: "12px",
+                      border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                      borderRadius: "8px",
+                      fontSize: "16px",
+                    }}
+                    value={customStart}
+                    onChange={(e) => setCustomStart(e.target.value)}
+                  />
+                  <input
+                    type="date"
+                    style={{
+                      flex: 1,
+                      padding: "12px",
+                      border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                      borderRadius: "8px",
+                      fontSize: "16px",
+                    }}
+                    value={customEnd}
+                    onChange={(e) => setCustomEnd(e.target.value)}
+                  />
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+                  <select
+                    style={{
+                      flex: 1,
+                      padding: "12px",
+                      border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                      borderRadius: "8px",
+                      fontSize: "16px",
+                    }}
+                    value={month}
+                    onChange={(e) => setMonth(Number(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => (
+                      <option key={i + 1} value={i + 1}>
+                        {new Date(0, i).toLocaleString("en", { month: "long" })}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    style={{
+                      flex: 1,
+                      padding: "12px",
+                      border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                      borderRadius: "8px",
+                      fontSize: "16px",
+                    }}
+                    value={year}
+                    onChange={(e) => setYear(Number(e.target.value))}
+                  >
+                    {Array.from({ length: 5 }, (_, i) => {
+                      const y = new Date().getFullYear() - 2 + i;
+                      return (
+                        <option key={y} value={y}>
+                          {y}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
+            </>
+          )
+        )}
+        <button
+          style={{
+            width: "100%",
+            padding: "12px",
+            background: `linear-gradient(135deg, ${BRAND_COLORS.primary}, ${BRAND_COLORS.secondary})`,
+            color: "white",
+            border: "none",
+            borderRadius: "8px",
+            fontSize: "16px",
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+          onClick={() => setMenuOpen(false)}
+        >
+          Apply Filters
+        </button>
+      </div>
+    </div>
+  );
+
+  if (reportType === "production") {
+    if (productionLoading) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+          <style jsx>{`
+            @keyframes slideDown {
+              0% {
+                opacity: 0;
+                transform: translateY(-10px);
+              }
+              100% {
+                opacity: 1;
+                transform: translateY(0);
+              }
+            }
+          `}</style>
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4" />
+            <p className="text-gray-600">Loading WasteX production data...</p>
+          </div>
+          {menuOpen && renderReportTypeSelector()}
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-gray-50 pb-12">
+        <style jsx>{`
+          @keyframes slideDown {
+            0% {
+              opacity: 0;
+              transform: translateY(-10px);
+            }
+            100% {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
+        `}</style>
+
+        <div className="px-4 py-6 space-y-6">
+          <div className="bg-white shadow-sm border border-gray-200 rounded-2xl overflow-hidden">
+            <div className="flex flex-col gap-4 p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-4">
+                  <button
+                    onClick={() => setMenuOpen(!menuOpen)}
+                    className="mt-1 inline-flex items-center justify-center rounded-lg border border-gray-200 p-2 text-gray-600 hover:bg-gray-50"
+                  >
+                    {menuOpen ? <X size={20} /> : <Menu size={20} />}
+                  </button>
+                  <div className="flex items-start gap-3">
+                    <WasteXLogo className="w-12 h-12" />
+                    <div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <h1 className="text-2xl font-bold text-gray-900">WasteX Production</h1>
+                        <span className="text-xs px-3 py-1 rounded-full text-white" style={{ backgroundColor: BRAND_COLORS.primary }}>
+                          Mobile Dashboard
+                        </span>
+                        {!productionError && (
+                          <span className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700">
+                            Auto-Updated Hourly
+                          </span>
+                        )}
+                        {productionError && (
+                          <span className="text-xs px-2 py-1 rounded-full bg-yellow-100 text-yellow-700">
+                            Demo Mode
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-600 mt-1">
+                        Real-time tonnage tracking • Revenue analytics • Production monitoring
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={loadProductionData}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => window.open("https://drive.google.com", "_blank")}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Source Files
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <select
+                  value={productionViewMode}
+                  onChange={(e) => setProductionViewMode(e.target.value as "monthly" | "daily")}
+                  className="px-4 py-2 border border-gray-200 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="monthly">Monthly View</option>
+                  <option value="daily">Daily View</option>
+                </select>
+
+                <select
+                  value={productionSelectedMonth}
+                  onChange={(e) => setProductionSelectedMonth(Number(e.target.value))}
+                  className="px-4 py-2 border border-gray-200 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {Array.from({ length: 12 }, (_, i) => (
+                    <option key={i + 1} value={i + 1}>
+                      {new Date(0, i).toLocaleString("en", { month: "long" })}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={productionSelectedYear}
+                  onChange={(e) => setProductionSelectedYear(Number(e.target.value))}
+                  className="px-4 py-2 border border-gray-200 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {Array.from({ length: 3 }, (_, i) => {
+                    const yearOption = new Date().getFullYear() - 1 + i;
+                    return (
+                      <option key={yearOption} value={yearOption}>
+                        {yearOption}
+                      </option>
+                    );
+                  })}
+                </select>
+
+                <button
+                  onClick={() => setProductionViewMode(productionViewMode === "monthly" ? "daily" : "monthly")}
+                  className="ml-auto inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
+                >
+                  <TrendingUp className="w-4 h-4" />
+                  Toggle View
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+            <div
+              className="bg-white p-5 rounded-2xl shadow-sm border border-blue-100 hover:shadow-md transition-shadow"
+              style={{ borderLeftWidth: 4, borderLeftColor: BRAND_COLORS.primary }}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 font-medium">Total Tonnage</p>
+                  <p className="text-2xl font-bold text-gray-900">{formatProductionTonnage(productionKPIs.totalTonnage)}</p>
+                  <p className="text-xs text-green-600 mt-1">+5.2% vs last month</p>
+                </div>
+                <Package className="w-8 h-8 text-gray-400" />
+              </div>
+            </div>
+
+            <div
+              className="bg-white p-5 rounded-2xl shadow-sm border border-green-100 hover:shadow-md transition-shadow"
+              style={{ borderLeftWidth: 4, borderLeftColor: BRAND_COLORS.success }}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 font-medium">Total Revenue</p>
+                  <p className="text-2xl font-bold text-gray-900">{formatProductionCurrency(productionKPIs.totalRevenue)}</p>
+                  <p className={`text-xs mt-1 ${productionKPIs.monthlyGrowth >= 0 ? "text-green-600" : "text-red-600"}`}>
+                    {productionKPIs.monthlyGrowth >= 0 ? "+" : ""}
+                    {productionKPIs.monthlyGrowth.toFixed(1)}% vs last month
+                  </p>
+                </div>
+                <DollarSign className="w-8 h-8 text-gray-400" />
+              </div>
+            </div>
+
+            <div
+              className="bg-white p-5 rounded-2xl shadow-sm border border-amber-100 hover:shadow-md transition-shadow"
+              style={{ borderLeftWidth: 4, borderLeftColor: BRAND_COLORS.warning }}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 font-medium">Avg Price/Ton</p>
+                  <p className="text-2xl font-bold text-gray-900">{formatProductionCurrency(productionKPIs.avgPricePerTon)}</p>
+                  <p className="text-xs text-blue-600 mt-1">Standard rate</p>
+                </div>
+                <TrendingUp className="w-8 h-8 text-gray-400" />
+              </div>
+            </div>
+
+            <div
+              className="bg-white p-5 rounded-2xl shadow-sm border border-sky-100 hover:shadow-md transition-shadow"
+              style={{ borderLeftWidth: 4, borderLeftColor: BRAND_COLORS.secondary }}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 font-medium">Total Logs</p>
+                  <p className="text-2xl font-bold text-gray-900">{productionKPIs.totalLogs}</p>
+                  <p className="text-xs text-sky-600 mt-1">Processed entries</p>
+                </div>
+                <BarChart3 className="w-8 h-8 text-gray-400" />
+              </div>
+            </div>
+
+            <div
+              className="bg-white p-5 rounded-2xl shadow-sm border border-purple-100 hover:shadow-md transition-shadow"
+              style={{ borderLeftWidth: 4, borderLeftColor: BRAND_COLORS.tertiary }}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 font-medium">Active Clients</p>
+                  <p className="text-2xl font-bold text-gray-900">{productionClientDistribution.length}</p>
+                  <p className="text-xs text-purple-600 mt-1">Top 5 contributors</p>
+                </div>
+                <Users className="w-8 h-8 text-gray-400" />
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 p-6 border-b border-gray-200">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Production Trends</h2>
+                <p className="text-sm text-gray-500">Tonnage and revenue performance</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    const csvContent = productionFilteredData
+                      .map((log) =>
+                        [
+                          log.log_date,
+                          log.client_name || "",
+                          log.project_deliverable || "",
+                          log.tonnage,
+                          log.price_per_ton,
+                          log.total_amount,
+                          log.processing_status,
+                        ].join(","),
+                      )
+                      .join("\n");
+
+                    const blob = new Blob([
+                      "Date,Client,Project,Tonnage,Price per Ton,Total Amount,Status\n" + csvContent,
+                    ], { type: "text/csv" });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `wastex-production-${productionSelectedYear}-${productionSelectedMonth
+                      .toString()
+                      .padStart(2, "0")}.csv`;
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    showProductionNotification("Data exported successfully", "success");
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  <Download className="w-4 h-4" />
+                  Export CSV
+                </button>
+              </div>
+            </div>
+            <div className="p-4">
+              <ResponsiveContainer width="100%" height={320}>
+                <LineChart data={productionChartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                  <XAxis
+                    dataKey={productionViewMode === "daily" ? "date" : "month"}
+                    tick={{ fontSize: 12, fill: "#64748B" }}
+                  />
+                  <YAxis yAxisId="tonnage" orientation="left" tick={{ fontSize: 12, fill: "#64748B" }} />
+                  <YAxis
+                    yAxisId="revenue"
+                    orientation="right"
+                    tickFormatter={(value) => formatProductionCurrency(Number(value))}
+                    tick={{ fontSize: 12, fill: "#64748B" }}
+                  />
+                  <Tooltip
+                    formatter={(value: any, name: string) => [
+                      name === "tonnage"
+                        ? `${Number(value).toFixed(1)} tons`
+                        : formatProductionCurrency(Number(value)),
+                      name === "tonnage" ? "Tonnage" : "Revenue",
+                    ]}
+                  />
+                  <Legend />
+                  <Line
+                    yAxisId="tonnage"
+                    type="monotone"
+                    dataKey="tonnage"
+                    stroke={BRAND_COLORS.primary}
+                    strokeWidth={3}
+                    dot={{ r: 4 }}
+                    name="Tonnage"
+                  />
+                  <Line
+                    yAxisId="revenue"
+                    type="monotone"
+                    dataKey="revenue"
+                    stroke={BRAND_COLORS.success}
+                    strokeWidth={3}
+                    dot={{ r: 4 }}
+                    name="Revenue"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="p-6 border-b border-gray-200">
+              <h2 className="text-lg font-semibold text-gray-900">Revenue by Client</h2>
+              <p className="text-sm text-gray-500">Top contributing partners</p>
+            </div>
+            <div className="p-4">
+              <ResponsiveContainer width="100%" height={320}>
+                <PieChart>
+                  <Pie
+                    data={productionClientDistribution}
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={110}
+                    dataKey="value"
+                    label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                  >
+                    {productionClientDistribution.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={productionPieColors[index % productionPieColors.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value: any) => [formatProductionCurrency(Number(value)), "Revenue"]} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="flex flex-col gap-4 p-6 border-b border-gray-200">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">Production Logs</h2>
+                  <p className="text-sm text-gray-500">
+                    {productionViewMode === "monthly" ? "Monthly" : "Daily"} activity for {new Date(0, productionSelectedMonth - 1).toLocaleString("en", { month: "long" })}{" "}
+                    {productionSelectedYear}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={loadProductionData}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Reload
+                  </button>
+                  <button
+                    onClick={() => window.open("https://drive.google.com", "_blank")}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    <Plus className="w-4 h-4" />
+                    New Log
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="min-w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Client</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Project</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Tonnage</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Price/Ton</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Revenue</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Approval</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-100">
+                  {productionFilteredData.map((log) => (
+                    <tr key={log.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 text-sm text-gray-700">{formatProductionDate(log.log_date)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-700">{log.client_name}</td>
+                      <td className="px-4 py-3 text-sm text-gray-700">{log.project_deliverable}</td>
+                      <td className="px-4 py-3 text-sm text-gray-700">{log.tonnage.toFixed(1)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-700">{formatProductionCurrency(log.price_per_ton)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-700">{formatProductionCurrency(log.total_amount)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-700">{log.approval_name}</td>
+                      <td className="px-4 py-3 text-sm">
+                        <span
+                          className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
+                            log.processing_status === "Processed"
+                              ? "bg-green-100 text-green-700"
+                              : "bg-yellow-100 text-yellow-700"
+                          }`}
+                        >
+                          {log.processing_status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        <a
+                          href={log.file_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700"
+                        >
+                          <FileText className="w-4 h-4" />
+                          View
+                        </a>
+                      </td>
+                    </tr>
+                  ))}
+                  {productionFilteredData.length === 0 && (
+                    <tr>
+                      <td colSpan={9} className="px-4 py-6 text-center text-sm text-gray-500">
+                        No production logs for the selected period.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        {productionNotification.show && (
+          <div
+            className={`fixed bottom-6 right-4 sm:right-6 px-4 py-3 rounded-lg shadow-lg text-sm font-medium text-white ${
+              productionNotification.type === "success"
+                ? "bg-green-500"
+                : productionNotification.type === "error"
+                ? "bg-red-500"
+                : "bg-blue-500"
+            }`}
+          >
+            {productionNotification.message}
+          </div>
+        )}
+
+        {menuOpen && renderReportTypeSelector()}
+      </div>
+    );
+  }
+
   return (
     <div style={{ 
       minHeight: '100vh',
@@ -1556,160 +2663,8 @@ export default function EnhancedMobileDashboard() {
       </header>
 
       {/* Hamburger Dropdown Menu */}
-      {menuOpen && (
-        <div style={{
-          position: 'absolute',
-          top: '80px',
-          left: '16px',
-          right: '16px',
-          background: 'white',
-          borderRadius: '12px',
-          padding: '20px',
-          boxShadow: '0 8px 40px rgba(0, 0, 0, 0.15)',
-          border: `2px solid ${BRAND_COLORS.gray[200]}`,
-          zIndex: 1000,
-          animation: 'slideDown 0.3s ease-out'
-        }}>
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: BRAND_COLORS.accent }}>
-              Report Type
-            </label>
-            <select
-              style={{
-                width: '100%',
-                padding: '12px',
-                border: `2px solid ${BRAND_COLORS.gray[200]}`,
-                borderRadius: '8px',
-                fontSize: '16px'
-              }}
-              value={reportType}
-              onChange={(e) =>
-                setReportType(
-                  e.target.value as "pl" | "cf" | "ar" | "ap" | "payroll",
-                )
-              }
-            >
-              <option value="pl">P&L Statement</option>
-              <option value="cf">Cash Flow Statement</option>
-              <option value="payroll">Payroll</option>
-              <option value="ar">A/R Aging Report</option>
-              <option value="ap">A/P Aging Report</option>
-            </select>
-          </div>
-          {reportType !== "ar" && reportType !== "ap" && (
-            <>
-              <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: BRAND_COLORS.accent }}>
-                  Report Period
-                </label>
-                <select
-                  style={{
-                    width: '100%',
-                    padding: '12px',
-                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
-                    borderRadius: '8px',
-                    fontSize: '16px'
-                  }}
-                  value={reportPeriod}
-                  onChange={(e) =>
-                    setReportPeriod(e.target.value as "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly")
-                  }
-                >
-                  <option value="Monthly">Monthly</option>
-                  <option value="Custom">Custom Range</option>
-                  <option value="Year to Date">Year to Date</option>
-                  <option value="Trailing 12">Trailing 12 Months</option>
-                  <option value="Quarterly">Quarterly</option>
-                </select>
-              </div>
-              {reportPeriod === "Custom" ? (
-                <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
-                  <input
-                    type="date"
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      border: `2px solid ${BRAND_COLORS.gray[200]}`,
-                      borderRadius: '8px',
-                      fontSize: '16px'
-                    }}
-                    value={customStart}
-                    onChange={(e) => setCustomStart(e.target.value)}
-                  />
-                  <input
-                    type="date"
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      border: `2px solid ${BRAND_COLORS.gray[200]}`,
-                      borderRadius: '8px',
-                      fontSize: '16px'
-                    }}
-                    value={customEnd}
-                    onChange={(e) => setCustomEnd(e.target.value)}
-                  />
-                </div>
-              ) : (
-                <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
-                  <select
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      border: `2px solid ${BRAND_COLORS.gray[200]}`,
-                      borderRadius: '8px',
-                      fontSize: '16px'
-                    }}
-                    value={month}
-                    onChange={(e) => setMonth(Number(e.target.value))}
-                  >
-                    {Array.from({ length: 12 }, (_, i) => (
-                      <option key={i + 1} value={i + 1}>
-                        {new Date(0, i).toLocaleString("en", { month: "long" })}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      border: `2px solid ${BRAND_COLORS.gray[200]}`,
-                      borderRadius: '8px',
-                      fontSize: '16px'
-                    }}
-                    value={year}
-                    onChange={(e) => setYear(Number(e.target.value))}
-                  >
-                    {Array.from({ length: 5 }, (_, i) => {
-                      const y = new Date().getFullYear() - 2 + i;
-                      return (
-                        <option key={y} value={y}>
-                          {y}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-              )}
-            </>
-          )}
-          <button
-            style={{
-              width: '100%',
-              padding: '12px',
-              background: `linear-gradient(135deg, ${BRAND_COLORS.primary}, ${BRAND_COLORS.secondary})`,
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              fontSize: '16px',
-              fontWeight: '600',
-              cursor: 'pointer'
-            }}
-            onClick={() => setMenuOpen(false)}
-          >
-            Apply Filters
-          </button>
-        </div>
-      )}
+      {menuOpen && renderReportTypeSelector()}
+
 
       {view === "overview" && (
         <div>
