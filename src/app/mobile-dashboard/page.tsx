@@ -2337,27 +2337,6 @@ export default function EnhancedMobileDashboard() {
               </button>
             </div>
 
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
-              {PRODUCTION_PERIOD_OPTIONS.map((option) => (
-                <button
-                  key={option}
-                  onClick={() => handleProductionPeriodSelect(option)}
-                  style={{
-                    padding: '8px 14px',
-                    borderRadius: '999px',
-                    border: 'none',
-                    background: option === productionPeriod ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.12)',
-                    color: 'white',
-                    fontWeight: option === productionPeriod ? 600 : 500,
-                    cursor: 'pointer',
-                    transition: 'background 0.2s ease',
-                  }}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
-
             {productionNotice && (
               <div style={{
                 background: 'rgba(255,255,255,0.2)',
@@ -2636,7 +2615,59 @@ export default function EnhancedMobileDashboard() {
               <option value="ap">A/P Aging Report</option>
             </select>
           </div>
-          {reportType !== "ar" && reportType !== "ap" && reportType !== "production" && (
+          {reportType === "production" ? (
+            <>
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: BRAND_COLORS.accent }}>
+                  Production Period
+                </label>
+                <select
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    borderRadius: '8px',
+                    fontSize: '16px'
+                  }}
+                  value={productionPeriod}
+                  onChange={(e) =>
+                    handleProductionPeriodSelect(e.target.value as ProductionPeriod)
+                  }
+                >
+                  {PRODUCTION_PERIOD_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {productionPeriod === "Custom" && (
+                <button
+                  type="button"
+                  onClick={openProductionCustomRange}
+                  style={{
+                    width: '100%',
+                    marginBottom: '16px',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: `2px solid ${BRAND_COLORS.gray[200]}`,
+                    background: 'white',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: BRAND_COLORS.accent,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {productionCustomStart && productionCustomEnd
+                    ? `${format(parseDateValue(productionCustomStart), 'MMM d, yyyy')} - ${format(
+                        parseDateValue(productionCustomEnd),
+                        'MMM d, yyyy'
+                      )}`
+                    : 'Select date range'}
+                </button>
+              )}
+            </>
+          ) : reportType !== "ar" && reportType !== "ap" ? (
             <>
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: BRAND_COLORS.accent }}>
@@ -2731,7 +2762,7 @@ export default function EnhancedMobileDashboard() {
                 </div>
               )}
             </>
-          )}
+          ) : null}
           <button
             style={{
               width: '100%',
