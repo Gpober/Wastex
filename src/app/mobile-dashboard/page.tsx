@@ -180,6 +180,8 @@ type RankingMetric =
   | "payrollDept"
   | "payrollEmployee";
 
+type ReportType = "pl" | "cf" | "ar" | "ap" | "payroll" | "production";
+
 const insights: Insight[] = [
   {
     title: "Revenue trending up",
@@ -351,9 +353,7 @@ const hashBase64 = async (base64: string) => {
 
 export default function EnhancedMobileDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [reportType, setReportType] = useState<
-    "pl" | "cf" | "ar" | "ap" | "payroll"
-  >("pl");
+  const [reportType, setReportType] = useState<ReportType>("pl");
   const [reportPeriod, setReportPeriod] = useState<
     "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly"
   >("Monthly");
@@ -417,6 +417,11 @@ export default function EnhancedMobileDashboard() {
   const [isSyncingProduction, setIsSyncingProduction] = useState(false);
   const [offlineProductionQueue, setOfflineProductionQueue] = useState<ProductionEntry[]>([]);
   const [showAllProduction, setShowAllProduction] = useState(false);
+
+  useEffect(() => {
+    setView("overview");
+    setSelectedProperty(null);
+  }, [reportType]);
 
   const buttonRef = useRef<HTMLDivElement>(null);
   const productionPhotoInputRef = useRef<HTMLInputElement>(null);
@@ -1209,6 +1214,11 @@ export default function EnhancedMobileDashboard() {
 
   useEffect(() => {
     const load = async () => {
+      if (reportType === "production") {
+        setProperties([]);
+        setEmployeeTotals([]);
+        return;
+      }
       if (reportType === "ap") {
         const { data } = await supabase
           .from("ap_aging")
@@ -2084,13 +2094,16 @@ export default function EnhancedMobileDashboard() {
               ? "Cash Flow Dashboard"
               : reportType === "payroll"
               ? "Payroll Dashboard"
+              : reportType === "production"
+              ? "Production Dashboard"
               : reportType === "ap"
               ? "A/P Aging Report"
               : "A/R Aging Report"}
           </h1>
           <p style={{ fontSize: '14px', opacity: 0.9 }}>
-            {reportType === "ar" || reportType === "ap" ? "As of Today" : `${getMonthName(month)} ${year}`} • {properties.length}{" "}
-            {reportType === "payroll" ? "Departments" : reportType === "ap" ? "Vendors" : "Customers"}
+            {reportType === "production"
+              ? `${new Date().toLocaleDateString()} • ${sortedProductionEntries.length} Logs`
+              : `${reportType === "ar" || reportType === "ap" ? "As of Today" : `${getMonthName(month)} ${year}`} • ${properties.length} ${reportType === "payroll" ? "Departments" : reportType === "ap" ? "Vendors" : "Customers"}`}
           </p>
         </div>
 
@@ -2116,13 +2129,44 @@ export default function EnhancedMobileDashboard() {
           }}
         >
           <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-            <span style={{ fontSize: '14px', opacity: 0.9 }}>Company Total</span>
+            <span style={{ fontSize: '14px', opacity: 0.9 }}>
+              {reportType === "production" ? "Today's Tonnage" : "Company Total"}
+            </span>
             <div style={{ fontSize: '32px', fontWeight: 'bold', margin: '8px 0' }}>
-              {formatCompactCurrency(companyTotals.net)}
+              {reportType === "production"
+                ? formatTonnage(todaysProduction.tonnage)
+                : formatCompactCurrency(companyTotals.net)}
             </div>
           </div>
-          
-          {reportType === "pl" ? (
+
+          {reportType === "production" ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', textAlign: 'center' }}>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatTonnage(todaysProduction.tonnage)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Today's Output</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatCurrencyWithCents(todaysProduction.revenue)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Today's Revenue</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatTonnage(weeklyProduction.tonnage)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Week-to-Date Output</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                  {formatCurrencyWithCents(weeklyProduction.revenue)}
+                </div>
+                <div style={{ fontSize: '11px', opacity: 0.8 }}>Week-to-Date Revenue</div>
+              </div>
+            </div>
+          ) : reportType === "pl" ? (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', textAlign: 'center' }}>
               <div>
                 <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
@@ -2252,18 +2296,19 @@ export default function EnhancedMobileDashboard() {
               value={reportType}
               onChange={(e) =>
                 setReportType(
-                  e.target.value as "pl" | "cf" | "ar" | "ap" | "payroll",
+                  e.target.value as ReportType,
                 )
               }
             >
               <option value="pl">P&L Statement</option>
               <option value="cf">Cash Flow Statement</option>
               <option value="payroll">Payroll</option>
+              <option value="production">Production</option>
               <option value="ar">A/R Aging Report</option>
               <option value="ap">A/P Aging Report</option>
             </select>
           </div>
-          {reportType !== "ar" && reportType !== "ap" && (
+          {reportType !== "ar" && reportType !== "ap" && reportType !== "production" && (
             <>
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: BRAND_COLORS.accent }}>
@@ -2380,8 +2425,10 @@ export default function EnhancedMobileDashboard() {
 
       {view === "overview" && (
         <div>
-          {/* Production Summary */}
-          <div style={{
+          {reportType === "production" ? (
+            <>
+              {/* Production Summary */}
+              <div style={{
             background: 'white',
             borderRadius: '16px',
             padding: '20px',
@@ -2702,9 +2749,11 @@ export default function EnhancedMobileDashboard() {
               </div>
             )}
           </div>
-
-          {/* Portfolio Insights */}
-          <div style={{
+            </>
+          ) : (
+            <>
+              {/* Portfolio Insights */}
+              <div style={{
             background: 'white',
             borderRadius: '16px',
             padding: '20px',
@@ -3595,7 +3644,7 @@ export default function EnhancedMobileDashboard() {
                 color: BRAND_COLORS.accent
               }}
             >
-              Company Total {reportType === "pl" ? "Net Income" : reportType === "cf" ? "Net Cash" : reportType === "payroll" ? "Payroll" : reportType === "ap" ? "A/P" : "A/R"}
+              Company Total {reportType === "pl" ? "Net Income" : reportType === "cf" ? "Net Cash" : reportType === "payroll" ? "Payroll" : reportType === "production" ? "Production" : reportType === "ap" ? "A/P" : "A/R"}
             </span>
             <div
               style={{
@@ -3608,6 +3657,8 @@ export default function EnhancedMobileDashboard() {
               {formatCompactCurrency(companyTotals.net)}
             </div>
           </div>
+            </>
+          )}
         </div>
       )}
 
@@ -3704,7 +3755,7 @@ export default function EnhancedMobileDashboard() {
             color: 'white'
           }}>
             <h2 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '8px' }}>
-              {selectedProperty || "Company Total"} - {reportType === "pl" ? "P&L Statement" : reportType === "cf" ? "Cash Flow Statement" : reportType === "payroll" ? "Payroll Statement" : reportType === "ap" ? "A/P Aging" : "A/R Aging"}
+              {selectedProperty || "Company Total"} - {reportType === "pl" ? "P&L Statement" : reportType === "cf" ? "Cash Flow Statement" : reportType === "payroll" ? "Payroll Statement" : reportType === "production" ? "Production Overview" : reportType === "ap" ? "A/P Aging" : "A/R Aging"}
             </h2>
             <p style={{ fontSize: '14px', opacity: 0.9 }}>
               {reportType === "ar" || reportType === "ap" ? "As of Today" : `${getMonthName(month)} ${year}`}
@@ -4155,7 +4206,7 @@ export default function EnhancedMobileDashboard() {
             }}
           >
             <ChevronLeft size={20} style={{ marginRight: '4px' }} />
-            Back to {reportType === "pl" ? "P&L" : reportType === "cf" ? "Cash Flow" : reportType === "payroll" ? "Payroll" : reportType === "ap" ? "A/P" : "A/R"}
+            Back to {reportType === "pl" ? "P&L" : reportType === "cf" ? "Cash Flow" : reportType === "payroll" ? "Payroll" : reportType === "production" ? "Production" : reportType === "ap" ? "A/P" : "A/R"}
           </button>
 
           {reportType === "ar" ? (
