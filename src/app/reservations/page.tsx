@@ -1,6 +1,9 @@
+"use client";
+
 import React, { useState, useEffect } from 'react';
 import { Calendar, Download, RefreshCw, Plus, X, TrendingUp, Package, DollarSign, BarChart3, FileText, Users } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
+import { supabase } from '@/lib/supabaseClient';
 
 // Brand Colors
 const BRAND_COLORS = {
@@ -45,6 +48,25 @@ interface ProductionLog {
   created_at: string;
 }
 
+type SupabaseProductionLog = {
+  id: number | string;
+  log_date?: string | null;
+  year?: number | null;
+  month?: number | null;
+  tonnage?: number | string | null;
+  price_per_ton?: number | string | null;
+  total_amount?: number | string | null;
+  client_name?: string | null;
+  project_deliverable?: string | null;
+  approval_name?: string | null;
+  file_name?: string | null;
+  folder_path?: string | null;
+  file_url?: string | null;
+  last_modified?: string | null;
+  processing_status?: string | null;
+  created_at?: string | null;
+};
+
 interface KPIs {
   totalTonnage: number;
   totalRevenue: number;
@@ -59,71 +81,6 @@ interface ChartData {
   revenue: number;
   month?: string;
 }
-
-// Supabase client configuration
-const SUPABASE_URL = 'https://prdbqhvjqskfukttlxmy.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InByZGJxaHZqcXNrZnVrdHRseG15Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY5MzM2MDQsImV4cCI6MjA3MjUwOTYwNH0.duxyAPuXtFOBvDtngNv7vFQ92pb8Gh3gZJ1e2pWungM';
-
-// Simple Supabase client
-const createClient = (supabaseUrl: string, supabaseKey: string) => {
-  const client = {
-    from: (table: string) => ({
-      select: (columns: string = '*') => ({
-        order: (column: string, options?: { ascending?: boolean }) => ({
-          limit: (count: number) => client._fetch(`${supabaseUrl}/rest/v1/${table}?select=${columns}&order=${column}.${options?.ascending ? 'asc' : 'desc'}&limit=${count}`),
-          then: (callback: (result: any) => void) => 
-            client._fetch(`${supabaseUrl}/rest/v1/${table}?select=${columns}&order=${column}.${options?.ascending ? 'asc' : 'desc'}`)
-              .then(callback)
-        }),
-        gte: (column: string, value: any) => ({
-          lte: (column2: string, value2: any) => ({
-            then: (callback: (result: any) => void) => 
-              client._fetch(`${supabaseUrl}/rest/v1/${table}?select=${columns}&${column}=gte.${value}&${column2}=lte.${value2}`)
-                .then(callback)
-          }),
-          then: (callback: (result: any) => void) => 
-            client._fetch(`${supabaseUrl}/rest/v1/${table}?select=${columns}&${column}=gte.${value}`)
-              .then(callback)
-        }),
-        then: (callback: (result: any) => void) => 
-          client._fetch(`${supabaseUrl}/rest/v1/${table}?select=${columns}`)
-            .then(callback)
-      }),
-      insert: (data: any) => ({
-        then: (callback: (result: any) => void) => 
-          client._fetch(`${supabaseUrl}/rest/v1/${table}`, {
-            method: 'POST',
-            body: JSON.stringify(data)
-          }).then(callback)
-      })
-    }),
-    _fetch: async (url: string, options: any = {}) => {
-      try {
-        const response = await fetch(url, {
-          headers: {
-            'apikey': supabaseKey,
-            'Authorization': `Bearer ${supabaseKey}`,
-            'Content-Type': 'application/json',
-            ...options.headers
-          },
-          ...options
-        });
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        return { data, error: null };
-      } catch (error) {
-        return { data: null, error };
-      }
-    }
-  };
-  return client;
-};
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Logo Component
 const WasteXLogo = ({ className = "w-8 h-8" }: { className?: string }) => (
@@ -155,6 +112,49 @@ const WasteXDashboard: React.FC = () => {
     show: false, message: '', type: 'info'
   });
 
+  const normalizeProductionLogs = (logs: SupabaseProductionLog[]): ProductionLog[] => {
+    return logs.map((log) => {
+      const idValue = Number(log.id ?? 0);
+      const id = Number.isFinite(idValue) ? idValue : 0;
+      const logDateRaw = log.log_date ?? null;
+      const parsedDate = logDateRaw ? new Date(logDateRaw) : null;
+
+      const tonnageValue = Number(log.tonnage ?? 0);
+      const tonnage = Number.isFinite(tonnageValue) ? tonnageValue : 0;
+
+      const pricePerTonValue = Number(log.price_per_ton ?? 0);
+      const pricePerTon = Number.isFinite(pricePerTonValue) ? pricePerTonValue : 0;
+
+      const totalAmountValue = Number(
+        log.total_amount ?? (Number.isFinite(tonnage * pricePerTon) ? tonnage * pricePerTon : 0)
+      );
+      const totalAmount = Number.isFinite(totalAmountValue) ? totalAmountValue : tonnage * pricePerTon;
+
+      return {
+        id,
+        year: typeof log.year === 'number' && !Number.isNaN(log.year)
+          ? log.year
+          : parsedDate?.getFullYear() ?? selectedYear,
+        month: typeof log.month === 'number' && !Number.isNaN(log.month)
+          ? log.month
+          : (parsedDate ? parsedDate.getMonth() + 1 : selectedMonth),
+        log_date: parsedDate ? parsedDate.toISOString() : (logDateRaw ?? new Date().toISOString()),
+        tonnage,
+        price_per_ton: pricePerTon,
+        total_amount: totalAmount,
+        client_name: log.client_name ?? 'Unknown Client',
+        project_deliverable: log.project_deliverable ?? 'N/A',
+        approval_name: log.approval_name ?? 'Pending Approval',
+        file_name: log.file_name ?? 'N/A',
+        folder_path: log.folder_path ?? '',
+        file_url: log.file_url ?? '#',
+        last_modified: log.last_modified ?? '',
+        processing_status: log.processing_status ?? 'Pending',
+        created_at: log.created_at ?? ''
+      };
+    });
+  };
+
   // Load data from Supabase
   const loadProductionData = async () => {
     try {
@@ -170,12 +170,20 @@ const WasteXDashboard: React.FC = () => {
         throw error;
       }
 
-      setProductionLogs(data || []);
-      showNotification('Production data loaded successfully', 'success');
+      const normalized = normalizeProductionLogs((data ?? []) as SupabaseProductionLog[]);
+
+      if (normalized.length > 0) {
+        setProductionLogs(normalized);
+        showNotification('Production data loaded successfully', 'success');
+      } else {
+        setProductionLogs([]);
+        showNotification('No production logs found. Check your filters or add new entries.', 'info');
+      }
     } catch (err) {
       console.error('Error loading data:', err);
-      setError('Failed to load production data. Using demo data.');
-      
+      const message = err instanceof Error ? err.message : 'Failed to load production data. Using demo data.';
+      setError(message);
+
       // Fallback to demo data
       setProductionLogs([
         {
