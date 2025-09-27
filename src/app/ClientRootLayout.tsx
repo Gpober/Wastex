@@ -4,7 +4,7 @@ import type React from "react"
 import { Inter } from "next/font/google"
 import "./globals.css"
 import { useState, useEffect } from "react"
-import { BarChart3, DollarSign, TrendingUp, CreditCard, FileText, Users, Menu, X, BarChart2, Settings, Wallet } from "lucide-react"
+import { BarChart3, DollarSign, TrendingUp, CreditCard, FileText, Users, Menu, X, BarChart2, Settings, Wallet, Package } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import Image from "next/image"
@@ -50,9 +50,10 @@ const IAMCFOLogo = ({ className = "w-auto h-14" }) => (
 )
 
 const navigation = [
-  { name: "Overview", href: "/", icon: BarChart3 },
-  { name: "Balance Sheet", href: "/balance-sheet", icon: FileText },
+  { name: "Financial Overview", href: "/", icon: BarChart3 },
+  { name: "Production", href: "/production", icon: Package },
   { name: "P&L", href: "/financials", icon: TrendingUp },
+  { name: "Balance Sheet", href: "/balance-sheet", icon: FileText },
   { name: "Cash Flow", href: "/cash-flow", icon: DollarSign },
   { name: "A/R", href: "/accounts-receivable", icon: CreditCard },
   { name: "A/P", href: "/accounts-payable", icon: Users },
