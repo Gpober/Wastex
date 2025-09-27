@@ -156,20 +156,50 @@ const WasteXDashboard: React.FC = () => {
 
   // Load data from Supabase
   const loadProductionData = async () => {
+    console.group('🚛 WasteX Production Logs Fetch');
     try {
       setLoading(true);
       setError(null);
 
-      const { data, error } = await supabase
+      console.log('🔌 Testing Supabase connection to wastex_production_logs...');
+      const {
+        error: connectionError,
+        count: connectionCount
+      } = await supabase
+        .from('wastex_production_logs')
+        .select('id', { count: 'exact', head: true });
+
+      if (connectionError) {
+        console.error('❌ Supabase connection test failed:', connectionError);
+        throw new Error(`Supabase connection test failed: ${connectionError.message}`);
+      }
+
+      console.log(
+        `✅ Supabase connection succeeded. Accessible rows: ${
+          typeof connectionCount === 'number' ? connectionCount : 'unknown'
+        }`
+      );
+
+      const { data, error: fetchError, status } = await supabase
         .from('wastex_production_logs')
         .select('*')
         .order('log_date', { ascending: false });
 
-      if (error) {
-        throw error;
+      if (fetchError) {
+        console.error('❌ Supabase fetch error:', { status, fetchError });
+        throw new Error(`Failed to fetch production logs: ${fetchError.message}`);
       }
 
       const normalized = normalizeProductionLogs((data ?? []) as SupabaseProductionLog[]);
+      console.log(`📦 Retrieved ${data?.length ?? 0} rows. Normalized entries: ${normalized.length}.`);
+
+      if ((data?.length ?? 0) === 0) {
+        if (typeof connectionCount === 'number' && connectionCount > 0) {
+          console.warn('⚠️ Table has rows but query returned none. Check RLS policies or filters.');
+        } else {
+          console.warn('ℹ️ No production logs returned from Supabase.');
+        }
+      }
 
       if (normalized.length > 0) {
         setProductionLogs(normalized);
@@ -179,7 +209,7 @@ const WasteXDashboard: React.FC = () => {
         showNotification('No production logs found. Check your filters or add new entries.', 'info');
       }
     } catch (err) {
-      console.error('Error loading data:', err);
+      console.error('🚨 Error loading production data from Supabase:', err);
       const message = err instanceof Error ? err.message : 'Failed to load production data. Using demo data.';
       setError(message);
 
@@ -261,6 +291,7 @@ const WasteXDashboard: React.FC = () => {
       showNotification('Using demo data - check Supabase connection', 'error');
     } finally {
       setLoading(false);
+      console.groupEnd();
     }
   };
 
