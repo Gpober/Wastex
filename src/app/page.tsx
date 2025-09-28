@@ -2540,7 +2540,7 @@ export default function FinancialOverviewPage() {
             </div>
 
             {/* Financial Health Summary */}
-            <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
               {/* Tonnage, Payroll & Working Capital Summary */}
               <div className="bg-white rounded-lg shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-gray-200">
