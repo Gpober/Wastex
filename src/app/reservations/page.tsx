@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
-import { Calendar, Download, RefreshCw, Plus, X, TrendingUp, Package, DollarSign, BarChart3, FileText, Users } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Calendar, Download, RefreshCw, TrendingUp, Package, DollarSign, BarChart3, FileText, ChevronDown } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -76,11 +76,20 @@ interface KPIs {
 }
 
 interface ChartData {
-  date: string;
+  label: string;
+  rawDate?: string;
   tonnage: number;
   revenue: number;
-  month?: string;
 }
+
+type TimePeriod = 'Daily' | 'Weekly' | 'Monthly' | 'Quarterly' | 'YTD' | 'Trailing 12';
+
+const TOGGLE_BASE_CLASSES =
+  'h-9 px-4 text-sm font-semibold rounded-full transition-all duration-200 border flex items-center gap-1';
+const TOGGLE_ACTIVE_CLASSES =
+  'bg-gradient-to-r from-[#56B6E9] to-[#2E86C1] text-white shadow-md border-transparent';
+const TOGGLE_INACTIVE_CLASSES =
+  'bg-white text-gray-600 border-gray-300 hover:border-[#56B6E9] hover:text-[#2E86C1]';
 
 // Logo Component
 const WasteXLogo = ({ className = "w-8 h-8" }: { className?: string }) => (
@@ -107,10 +116,72 @@ const WasteXDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
-  const [viewMode, setViewMode] = useState<'monthly' | 'daily'>('monthly');
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>('Monthly');
+  const [chartType, setChartType] = useState<'line' | 'bar'>('line');
+  const [timePeriodDropdownOpen, setTimePeriodDropdownOpen] = useState(false);
+  const [monthDropdownOpen, setMonthDropdownOpen] = useState(false);
+  const [yearDropdownOpen, setYearDropdownOpen] = useState(false);
   const [notification, setNotification] = useState<{show: boolean; message: string; type: 'success' | 'error' | 'info'}>({
     show: false, message: '', type: 'info'
   });
+
+  const timePeriodDropdownRef = useRef<HTMLDivElement | null>(null);
+  const monthDropdownRef = useRef<HTMLDivElement | null>(null);
+  const yearDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  const TIME_PERIOD_OPTIONS: TimePeriod[] = useMemo(
+    () => ['Daily', 'Weekly', 'Monthly', 'Quarterly', 'YTD', 'Trailing 12'],
+    []
+  );
+
+  const monthsList = useMemo(
+    () =>
+      Array.from({ length: 12 }, (_, i) => ({
+        value: i + 1,
+        label: new Date(0, i).toLocaleString('en', { month: 'long' })
+      })),
+    []
+  );
+
+  const yearsList = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return Array.from({ length: 5 }, (_, i) => currentYear - 2 + i);
+  }, []);
+
+  const selectedMonthLabel = useMemo(() => {
+    const found = monthsList.find((month) => month.value === selectedMonth);
+    return found ? found.label : 'Select Month';
+  }, [monthsList, selectedMonth]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        timePeriodDropdownRef.current &&
+        !timePeriodDropdownRef.current.contains(event.target as Node)
+      ) {
+        setTimePeriodDropdownOpen(false);
+      }
+
+      if (
+        monthDropdownRef.current &&
+        !monthDropdownRef.current.contains(event.target as Node)
+      ) {
+        setMonthDropdownOpen(false);
+      }
+
+      if (
+        yearDropdownRef.current &&
+        !yearDropdownRef.current.contains(event.target as Node)
+      ) {
+        setYearDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   const normalizeProductionLogs = (logs: SupabaseProductionLog[]): ProductionLog[] => {
     return logs.map((log) => {
@@ -321,6 +392,24 @@ const WasteXDashboard: React.FC = () => {
     return `${tonnage.toFixed(1)} tons`;
   };
 
+  const formatTooltipValue = (
+    value: number | string,
+    _name: string,
+    props?: { dataKey?: string }
+  ): [string, string] => {
+    const numericValue = typeof value === 'number' ? value : Number(value);
+
+    if (props?.dataKey === 'tonnage') {
+      const tonnageDisplay = Number.isFinite(numericValue)
+        ? `${numericValue.toFixed(1)} tons`
+        : `${value} tons`;
+      return [tonnageDisplay, 'Tonnage'];
+    }
+
+    const revenueValue = Number.isFinite(numericValue) ? numericValue : Number(value);
+    return [formatCurrency(revenueValue), 'Revenue'];
+  };
+
   const showNotification = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setNotification({ show: true, message, type });
     setTimeout(() => {
@@ -328,14 +417,50 @@ const WasteXDashboard: React.FC = () => {
     }, 3000);
   };
 
+  const getQuarterMonths = (month: number) => {
+    const startMonth = Math.floor((month - 1) / 3) * 3 + 1;
+    return [startMonth, startMonth + 1, startMonth + 2];
+  };
+
   // Filter data based on selected period
   const getFilteredData = (): ProductionLog[] => {
-    return productionLogs.filter(log => {
-      if (viewMode === 'monthly') {
-        return log.year === selectedYear && log.month === selectedMonth;
+    const endOfSelectedMonth = new Date(selectedYear, selectedMonth, 0, 23, 59, 59, 999);
+
+    switch (timePeriod) {
+      case 'Daily':
+      case 'Weekly':
+        return productionLogs.filter(
+          (log) => log.year === selectedYear && log.month === selectedMonth
+        );
+      case 'Monthly':
+        return productionLogs.filter(
+          (log) => log.year === selectedYear && log.month === selectedMonth
+        );
+      case 'Quarterly': {
+        const quarterMonths = getQuarterMonths(selectedMonth);
+        return productionLogs.filter(
+          (log) => log.year === selectedYear && quarterMonths.includes(log.month)
+        );
       }
-      return log.year === selectedYear;
-    });
+      case 'YTD':
+        return productionLogs.filter(
+          (log) => log.year === selectedYear && log.month <= selectedMonth
+        );
+      case 'Trailing 12': {
+        const startDate = new Date(endOfSelectedMonth);
+        startDate.setMonth(startDate.getMonth() - 11);
+        startDate.setHours(0, 0, 0, 0);
+
+        return productionLogs.filter((log) => {
+          const logDate = new Date(log.log_date);
+          return logDate >= startDate && logDate <= endOfSelectedMonth;
+        });
+      }
+      default:
+        return productionLogs.filter(
+          (log) => log.year === selectedYear && log.month === selectedMonth
+        );
+    }
   };
 
   // Calculate KPIs
@@ -347,13 +472,48 @@ const WasteXDashboard: React.FC = () => {
     const totalLogs = filteredData.length;
 
     // Calculate growth (simplified)
-    const previousMonth = selectedMonth === 1 ? 12 : selectedMonth - 1;
-    const previousYear = selectedMonth === 1 ? selectedYear - 1 : selectedYear;
-    const previousData = productionLogs.filter(log => 
-      log.year === previousYear && log.month === previousMonth
-    );
+    let previousData: ProductionLog[] = [];
+
+    if (timePeriod === 'Quarterly') {
+      const currentQuarterIndex = Math.floor((selectedMonth - 1) / 3);
+      const previousQuarterIndex = (currentQuarterIndex + 3) % 4;
+      const previousYear = currentQuarterIndex === 0 ? selectedYear - 1 : selectedYear;
+      const previousQuarterStart = previousQuarterIndex * 3 + 1;
+      const previousQuarterMonths = [
+        previousQuarterStart,
+        previousQuarterStart + 1,
+        previousQuarterStart + 2
+      ];
+
+      previousData = productionLogs.filter(
+        (log) => log.year === previousYear && previousQuarterMonths.includes(log.month)
+      );
+    } else if (timePeriod === 'YTD') {
+      previousData = productionLogs.filter(
+        (log) => log.year === selectedYear - 1 && log.month <= selectedMonth
+      );
+    } else if (timePeriod === 'Trailing 12') {
+      const comparisonEnd = new Date(selectedYear, selectedMonth - 1, 1);
+      comparisonEnd.setMonth(comparisonEnd.getMonth() - 1);
+      const comparisonStart = new Date(comparisonEnd);
+      comparisonStart.setMonth(comparisonStart.getMonth() - 11);
+      comparisonStart.setHours(0, 0, 0, 0);
+      const comparisonEndDate = new Date(comparisonEnd.getFullYear(), comparisonEnd.getMonth() + 1, 0, 23, 59, 59, 999);
+
+      previousData = productionLogs.filter((log) => {
+        const logDate = new Date(log.log_date);
+        return logDate >= comparisonStart && logDate <= comparisonEndDate;
+      });
+    } else {
+      const previousMonth = selectedMonth === 1 ? 12 : selectedMonth - 1;
+      const previousYear = selectedMonth === 1 ? selectedYear - 1 : selectedYear;
+      previousData = productionLogs.filter(
+        (log) => log.year === previousYear && log.month === previousMonth
+      );
+    }
+
     const previousRevenue = previousData.reduce((sum, log) => sum + log.total_amount, 0);
-    const monthlyGrowth = previousRevenue > 0 ? 
+    const monthlyGrowth = previousRevenue > 0 ?
       ((totalRevenue - previousRevenue) / previousRevenue) * 100 : 0;
 
     return {
@@ -365,38 +525,190 @@ const WasteXDashboard: React.FC = () => {
     };
   };
 
+  const getWeekStartDate = (dateString: string) => {
+    const date = new Date(dateString);
+    const day = date.getDay();
+    const diff = (day === 0 ? -6 : 1) - day;
+    const weekStart = new Date(date);
+    weekStart.setDate(date.getDate() + diff);
+    weekStart.setHours(0, 0, 0, 0);
+    return weekStart;
+  };
+
   // Generate chart data
   const generateChartData = (): ChartData[] => {
     const filteredData = getFilteredData();
-    
-    if (viewMode === 'daily') {
-      return filteredData.map(log => ({
-        date: formatDate(log.log_date),
-        tonnage: log.tonnage,
-        revenue: log.total_amount
-      })).reverse();
-    } else {
-      // Monthly aggregation
-      const monthlyData: { [key: string]: { tonnage: number; revenue: number } } = {};
-      
-      productionLogs.forEach(log => {
-        const key = `${log.year}-${log.month.toString().padStart(2, '0')}`;
-        if (!monthlyData[key]) {
-          monthlyData[key] = { tonnage: 0, revenue: 0 };
-        }
-        monthlyData[key].tonnage += log.tonnage;
-        monthlyData[key].revenue += log.total_amount;
-      });
 
-      return Object.entries(monthlyData)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .slice(-12) // Last 12 months
-        .map(([key, data]) => ({
-          date: key,
-          month: new Date(key + '-01').toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
-          tonnage: data.tonnage,
-          revenue: data.revenue
-        }));
+    if (!filteredData.length && !productionLogs.length) {
+      return [];
+    }
+
+    switch (timePeriod) {
+      case 'Daily':
+        return filteredData
+          .slice()
+          .sort(
+            (a, b) => new Date(a.log_date).getTime() - new Date(b.log_date).getTime()
+          )
+          .map((log) => ({
+            label: new Date(log.log_date).toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric'
+            }),
+            rawDate: log.log_date,
+            tonnage: log.tonnage,
+            revenue: log.total_amount
+          }));
+      case 'Weekly': {
+        const weeklyMap = new Map<string, ChartData>();
+
+        filteredData.forEach((log) => {
+          const weekStart = getWeekStartDate(log.log_date);
+          const key = weekStart.toISOString();
+
+          if (!weeklyMap.has(key)) {
+            weeklyMap.set(key, {
+              label: `Week of ${weekStart.toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric'
+              })}`,
+              rawDate: key,
+              tonnage: 0,
+              revenue: 0
+            });
+          }
+
+          const entry = weeklyMap.get(key)!;
+          entry.tonnage += log.tonnage;
+          entry.revenue += log.total_amount;
+        });
+
+        return Array.from(weeklyMap.values()).sort(
+          (a, b) => new Date(a.rawDate ?? '').getTime() - new Date(b.rawDate ?? '').getTime()
+        );
+      }
+      case 'Monthly': {
+        const monthlyTotals = new Map<string, { tonnage: number; revenue: number }>();
+
+        productionLogs.forEach((log) => {
+          const key = `${log.year}-${log.month.toString().padStart(2, '0')}`;
+          if (!monthlyTotals.has(key)) {
+            monthlyTotals.set(key, { tonnage: 0, revenue: 0 });
+          }
+
+          const entry = monthlyTotals.get(key)!;
+          entry.tonnage += log.tonnage;
+          entry.revenue += log.total_amount;
+        });
+
+        return Array.from(monthlyTotals.entries())
+          .sort(([a], [b]) => new Date(`${a}-01`).getTime() - new Date(`${b}-01`).getTime())
+          .slice(-12)
+          .map(([key, data]) => {
+            const [yearStr, monthStr] = key.split('-');
+            const year = Number(yearStr);
+            const month = Number(monthStr);
+            const date = new Date(year, month - 1, 1);
+
+            return {
+              label: date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+              rawDate: date.toISOString(),
+              tonnage: data.tonnage,
+              revenue: data.revenue
+            };
+          });
+      }
+      case 'Quarterly': {
+        const quarterlyTotals = new Map<string, { tonnage: number; revenue: number }>();
+
+        productionLogs.forEach((log) => {
+          const quarter = Math.floor((log.month - 1) / 3) + 1;
+          const key = `${log.year}-Q${quarter}`;
+          if (!quarterlyTotals.has(key)) {
+            quarterlyTotals.set(key, { tonnage: 0, revenue: 0 });
+          }
+
+          const entry = quarterlyTotals.get(key)!;
+          entry.tonnage += log.tonnage;
+          entry.revenue += log.total_amount;
+        });
+
+        return Array.from(quarterlyTotals.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .slice(-8)
+          .map(([key, data]) => ({
+            label: key.replace('-', ' '),
+            rawDate: key,
+            tonnage: data.tonnage,
+            revenue: data.revenue
+          }));
+      }
+      case 'YTD': {
+        const ytdTotals = new Map<number, { tonnage: number; revenue: number }>();
+
+        productionLogs.forEach((log) => {
+          if (log.year === selectedYear && log.month <= selectedMonth) {
+            if (!ytdTotals.has(log.month)) {
+              ytdTotals.set(log.month, { tonnage: 0, revenue: 0 });
+            }
+
+            const entry = ytdTotals.get(log.month)!;
+            entry.tonnage += log.tonnage;
+            entry.revenue += log.total_amount;
+          }
+        });
+
+        return Array.from(ytdTotals.entries())
+          .sort(([a], [b]) => a - b)
+          .map(([month, data]) => {
+            const date = new Date(selectedYear, month - 1, 1);
+            return {
+              label: date.toLocaleDateString('en-US', { month: 'short' }),
+              rawDate: date.toISOString(),
+              tonnage: data.tonnage,
+              revenue: data.revenue
+            };
+          });
+      }
+      case 'Trailing 12': {
+        const endDate = new Date(selectedYear, selectedMonth, 0, 23, 59, 59, 999);
+        const startDate = new Date(endDate);
+        startDate.setMonth(startDate.getMonth() - 11);
+        startDate.setHours(0, 0, 0, 0);
+
+        const trailingTotals = new Map<string, { tonnage: number; revenue: number }>();
+
+        productionLogs.forEach((log) => {
+          const logDate = new Date(log.log_date);
+          if (logDate >= startDate && logDate <= endDate) {
+            const key = `${log.year}-${log.month.toString().padStart(2, '0')}`;
+            if (!trailingTotals.has(key)) {
+              trailingTotals.set(key, { tonnage: 0, revenue: 0 });
+            }
+
+            const entry = trailingTotals.get(key)!;
+            entry.tonnage += log.tonnage;
+            entry.revenue += log.total_amount;
+          }
+        });
+
+        return Array.from(trailingTotals.entries())
+          .sort(([a], [b]) => new Date(`${a}-01`).getTime() - new Date(`${b}-01`).getTime())
+          .map(([key, data]) => {
+            const [yearStr, monthStr] = key.split('-');
+            const year = Number(yearStr);
+            const month = Number(monthStr);
+            const date = new Date(year, month - 1, 1);
+            return {
+              label: date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+              rawDate: date.toISOString(),
+              tonnage: data.tonnage,
+              revenue: data.revenue
+            };
+          });
+      }
+      default:
+        return [];
     }
   };
 
@@ -419,6 +731,10 @@ const WasteXDashboard: React.FC = () => {
   const kpis = calculateKPIs();
   const chartData = generateChartData();
   const clientDistribution = getClientDistribution();
+  const chartTitle =
+    timePeriod === 'Trailing 12'
+      ? 'Trailing 12-Month Production Trend'
+      : `${timePeriod} Production Trend`;
 
   const pieColors = [BRAND_COLORS.primary, BRAND_COLORS.secondary, BRAND_COLORS.tertiary, BRAND_COLORS.success, BRAND_COLORS.warning];
 
@@ -473,42 +789,91 @@ const WasteXDashboard: React.FC = () => {
             Production Dashboard
           </h2>
           
-          <div className="flex space-x-4 items-center">
-            <select
-              value={viewMode}
-              onChange={(e) => setViewMode(e.target.value as 'monthly' | 'daily')}
-              className="px-4 py-2 border border-gray-300 rounded-lg bg-white text-sm focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="monthly">Monthly View</option>
-              <option value="daily">Daily View</option>
-            </select>
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="relative" ref={timePeriodDropdownRef}>
+              <button
+                onClick={() => setTimePeriodDropdownOpen(!timePeriodDropdownOpen)}
+                className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2"
+                style={{ '--tw-ring-color': BRAND_COLORS.primary + '33' } as React.CSSProperties}
+              >
+                <Calendar className="w-4 h-4 mr-2" />
+                {timePeriod}
+                <ChevronDown className="w-4 h-4 ml-2" />
+              </button>
 
-            <select
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(Number(e.target.value))}
-              className="px-4 py-2 border border-gray-300 rounded-lg bg-white text-sm focus:ring-2 focus:ring-blue-500"
-            >
-              {Array.from({ length: 12 }, (_, i) => (
-                <option key={i + 1} value={i + 1}>
-                  {new Date(0, i).toLocaleString('en', { month: 'long' })}
-                </option>
-              ))}
-            </select>
+              {timePeriodDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-20">
+                  {TIME_PERIOD_OPTIONS.map((period) => (
+                    <button
+                      key={period}
+                      onClick={() => {
+                        setTimePeriod(period);
+                        setTimePeriodDropdownOpen(false);
+                      }}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 first:rounded-t-lg last:rounded-b-lg"
+                    >
+                      {period}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
-            <select
-              value={selectedYear}
-              onChange={(e) => setSelectedYear(Number(e.target.value))}
-              className="px-4 py-2 border border-gray-300 rounded-lg bg-white text-sm focus:ring-2 focus:ring-blue-500"
-            >
-              {Array.from({ length: 3 }, (_, i) => {
-                const year = new Date().getFullYear() - 1 + i;
-                return (
-                  <option key={year} value={year}>
-                    {year}
-                  </option>
-                );
-              })}
-            </select>
+            <div className="relative" ref={monthDropdownRef}>
+              <button
+                onClick={() => setMonthDropdownOpen(!monthDropdownOpen)}
+                className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2"
+                style={{ '--tw-ring-color': BRAND_COLORS.primary + '33' } as React.CSSProperties}
+              >
+                {selectedMonthLabel}
+                <ChevronDown className="w-4 h-4 ml-2" />
+              </button>
+
+              {monthDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto z-20">
+                  {monthsList.map((month) => (
+                    <button
+                      key={month.value}
+                      onClick={() => {
+                        setSelectedMonth(month.value);
+                        setMonthDropdownOpen(false);
+                      }}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 first:rounded-t-lg last:rounded-b-lg"
+                    >
+                      {month.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="relative" ref={yearDropdownRef}>
+              <button
+                onClick={() => setYearDropdownOpen(!yearDropdownOpen)}
+                className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2"
+                style={{ '--tw-ring-color': BRAND_COLORS.primary + '33' } as React.CSSProperties}
+              >
+                {selectedYear}
+                <ChevronDown className="w-4 h-4 ml-2" />
+              </button>
+
+              {yearDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-32 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto z-20">
+                  {yearsList.map((year) => (
+                    <button
+                      key={year}
+                      onClick={() => {
+                        setSelectedYear(year);
+                        setYearDropdownOpen(false);
+                      }}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 first:rounded-t-lg last:rounded-b-lg"
+                    >
+                      {year}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <button
               onClick={loadProductionData}
@@ -586,44 +951,102 @@ const WasteXDashboard: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
           {/* Production Trend */}
           <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-            <div className="p-6 border-b border-gray-200">
-              <h3 className="text-xl font-semibold text-gray-900">
-                {viewMode === 'daily' ? 'Daily' : 'Monthly'} Production Trend
-              </h3>
+            <div className="p-6 border-b border-gray-200 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <h3 className="text-xl font-semibold text-gray-900">{chartTitle}</h3>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setChartType('line')}
+                  className={`${TOGGLE_BASE_CLASSES} ${
+                    chartType === 'line' ? TOGGLE_ACTIVE_CLASSES : TOGGLE_INACTIVE_CLASSES
+                  }`}
+                >
+                  <TrendingUp
+                    className={`h-4 w-4 ${
+                      chartType === 'line' ? 'text-white' : 'text-gray-600'
+                    }`}
+                  />
+                  <span className={chartType === 'line' ? 'text-white' : 'text-gray-700'}>
+                    Line
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChartType('bar')}
+                  className={`${TOGGLE_BASE_CLASSES} ${
+                    chartType === 'bar' ? TOGGLE_ACTIVE_CLASSES : TOGGLE_INACTIVE_CLASSES
+                  }`}
+                >
+                  <BarChart3
+                    className={`h-4 w-4 ${
+                      chartType === 'bar' ? 'text-white' : 'text-gray-600'
+                    }`}
+                  />
+                  <span className={chartType === 'bar' ? 'text-white' : 'text-gray-700'}>
+                    Bar
+                  </span>
+                </button>
+              </div>
             </div>
             <div className="p-6">
               <ResponsiveContainer width="100%" height={350}>
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey={viewMode === 'daily' ? 'date' : 'month'} />
-                  <YAxis yAxisId="tonnage" orientation="left" />
-                  <YAxis yAxisId="revenue" orientation="right" tickFormatter={(value) => formatCurrency(value)} />
-                  <Tooltip 
-                    formatter={(value: any, name: string) => [
-                      name === 'tonnage' ? `${Number(value).toFixed(1)} tons` : formatCurrency(Number(value)),
-                      name === 'tonnage' ? 'Tonnage' : 'Revenue'
-                    ]}
-                  />
-                  <Legend />
-                  <Line 
-                    yAxisId="tonnage"
-                    type="monotone" 
-                    dataKey="tonnage" 
-                    stroke={BRAND_COLORS.primary}
-                    strokeWidth={3}
-                    dot={{ r: 5 }}
-                    name="Tonnage"
-                  />
-                  <Line 
-                    yAxisId="revenue"
-                    type="monotone" 
-                    dataKey="revenue" 
-                    stroke={BRAND_COLORS.success}
-                    strokeWidth={3}
-                    dot={{ r: 5 }}
-                    name="Revenue"
-                  />
-                </LineChart>
+                {chartType === 'line' ? (
+                  <LineChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="label" />
+                    <YAxis yAxisId="tonnage" orientation="left" />
+                    <YAxis
+                      yAxisId="revenue"
+                      orientation="right"
+                      tickFormatter={(value) => formatCurrency(value)}
+                    />
+                    <Tooltip formatter={formatTooltipValue} />
+                    <Legend />
+                    <Line
+                      yAxisId="tonnage"
+                      type="monotone"
+                      dataKey="tonnage"
+                      stroke={BRAND_COLORS.primary}
+                      strokeWidth={3}
+                      dot={{ r: 4 }}
+                      name="Tonnage"
+                    />
+                    <Line
+                      yAxisId="revenue"
+                      type="monotone"
+                      dataKey="revenue"
+                      stroke={BRAND_COLORS.success}
+                      strokeWidth={3}
+                      dot={{ r: 4 }}
+                      name="Revenue"
+                    />
+                  </LineChart>
+                ) : (
+                  <BarChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="label" />
+                    <YAxis yAxisId="tonnage" orientation="left" />
+                    <YAxis
+                      yAxisId="revenue"
+                      orientation="right"
+                      tickFormatter={(value) => formatCurrency(value)}
+                    />
+                    <Tooltip formatter={formatTooltipValue} />
+                    <Legend />
+                    <Bar
+                      yAxisId="tonnage"
+                      dataKey="tonnage"
+                      fill={BRAND_COLORS.primary}
+                      name="Tonnage"
+                    />
+                    <Bar
+                      yAxisId="revenue"
+                      dataKey="revenue"
+                      fill={BRAND_COLORS.success}
+                      name="Revenue"
+                    />
+                  </BarChart>
+                )}
               </ResponsiveContainer>
             </div>
           </div>
