@@ -72,7 +72,8 @@ interface KPIs {
   totalRevenue: number;
   avgPricePerTon: number;
   totalLogs: number;
-  monthlyGrowth: number;
+  revenueGrowth: number;
+  tonnageGrowth: number;
 }
 
 interface ChartData {
@@ -388,8 +389,65 @@ const WasteXDashboard: React.FC = () => {
     });
   };
 
-  const formatTonnage = (tonnage: number): string => {
-    return `${tonnage.toFixed(1)} tons`;
+  const formatTonnage = (
+    tonnage: number,
+    options?: Intl.NumberFormatOptions
+  ): string => {
+    const formatter = new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+      ...options
+    });
+
+    return `${formatter.format(tonnage)} tons`;
+  };
+
+  const formatPercentageChange = (value: number): string => {
+    const formatter = new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0
+    });
+
+    if (value > 0) {
+      return `+${formatter.format(Math.abs(value))}%`;
+    }
+
+    if (value < 0) {
+      return `-${formatter.format(Math.abs(value))}%`;
+    }
+
+    return '0%';
+  };
+
+  const getDeltaColorClass = (value: number): string => {
+    if (value > 0) {
+      return 'text-green-600';
+    }
+
+    if (value < 0) {
+      return 'text-red-600';
+    }
+
+    return 'text-gray-600';
+  };
+
+  const getComparisonLabel = (): string => {
+    switch (timePeriod) {
+      case 'Daily':
+        return 'vs previous day';
+      case 'Weekly':
+        return 'vs previous week';
+      case 'Monthly':
+        return 'vs last month';
+      case 'Quarterly':
+        return 'vs prior quarter';
+      case 'YTD':
+        return 'vs previous YTD';
+      case 'Trailing 12':
+        return 'vs prior 12 months';
+      default:
+        return 'vs last period';
+    }
   };
 
   const formatTooltipValue = (
@@ -401,7 +459,10 @@ const WasteXDashboard: React.FC = () => {
 
     if (props?.dataKey === 'tonnage') {
       const tonnageDisplay = Number.isFinite(numericValue)
-        ? `${numericValue.toFixed(1)} tons`
+        ? formatTonnage(numericValue, {
+            minimumFractionDigits: 1,
+            maximumFractionDigits: 1
+          })
         : `${value} tons`;
       return [tonnageDisplay, 'Tonnage'];
     }
@@ -513,15 +574,23 @@ const WasteXDashboard: React.FC = () => {
     }
 
     const previousRevenue = previousData.reduce((sum, log) => sum + log.total_amount, 0);
-    const monthlyGrowth = previousRevenue > 0 ?
-      ((totalRevenue - previousRevenue) / previousRevenue) * 100 : 0;
+    const previousTonnage = previousData.reduce((sum, log) => sum + log.tonnage, 0);
+
+    const revenueGrowth = previousRevenue > 0
+      ? ((totalRevenue - previousRevenue) / previousRevenue) * 100
+      : 0;
+
+    const tonnageGrowth = previousTonnage > 0
+      ? ((totalTonnage - previousTonnage) / previousTonnage) * 100
+      : 0;
 
     return {
       totalTonnage,
       totalRevenue,
       avgPricePerTon,
       totalLogs,
-      monthlyGrowth
+      revenueGrowth,
+      tonnageGrowth
     };
   };
 
@@ -891,8 +960,17 @@ const WasteXDashboard: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600 font-medium mb-1">Total Tonnage</p>
-                <p className="text-2xl font-bold text-gray-900">{formatTonnage(kpis.totalTonnage)}</p>
-                <p className="text-xs text-green-600 mt-1">+5.2% vs last month</p>
+                <p className="text-2xl font-bold text-gray-900">
+                  {formatTonnage(kpis.totalTonnage, {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 0
+                  })}
+                </p>
+                <p
+                  className={`text-xs mt-1 ${getDeltaColorClass(kpis.tonnageGrowth)}`}
+                >
+                  {formatPercentageChange(kpis.tonnageGrowth)} {getComparisonLabel()}
+                </p>
               </div>
               <Package className="w-8 h-8 text-gray-400" />
             </div>
@@ -903,8 +981,10 @@ const WasteXDashboard: React.FC = () => {
               <div>
                 <p className="text-sm text-gray-600 font-medium mb-1">Total Revenue</p>
                 <p className="text-2xl font-bold text-gray-900">{formatCurrency(kpis.totalRevenue)}</p>
-                <p className={`text-xs mt-1 ${kpis.monthlyGrowth >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  {kpis.monthlyGrowth >= 0 ? '+' : ''}{kpis.monthlyGrowth.toFixed(1)}% vs last month
+                <p
+                  className={`text-xs mt-1 ${getDeltaColorClass(kpis.revenueGrowth)}`}
+                >
+                  {formatPercentageChange(kpis.revenueGrowth)} {getComparisonLabel()}
                 </p>
               </div>
               <DollarSign className="w-8 h-8 text-gray-400" />
@@ -938,7 +1018,12 @@ const WasteXDashboard: React.FC = () => {
               <div>
                 <p className="text-sm text-gray-600 font-medium mb-1">Avg Daily</p>
                 <p className="text-2xl font-bold text-gray-900">
-                  {kpis.totalLogs > 0 ? formatTonnage(kpis.totalTonnage / kpis.totalLogs) : '0 tons'}
+                  {kpis.totalLogs > 0
+                    ? formatTonnage(kpis.totalTonnage / kpis.totalLogs, {
+                        minimumFractionDigits: 0,
+                        maximumFractionDigits: 0
+                      })
+                    : '0 tons'}
                 </p>
                 <p className="text-xs text-gray-600 mt-1">Per working day</p>
               </div>
