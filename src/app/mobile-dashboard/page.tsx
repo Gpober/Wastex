@@ -51,6 +51,26 @@ import {
 
 import { supabase } from "@/lib/supabaseClient";
 
+const getCrypto = (): Crypto | undefined => {
+  if (typeof globalThis === "undefined") return undefined;
+  const maybeCrypto = (globalThis as { crypto?: Crypto }).crypto;
+  return maybeCrypto;
+};
+
+const generateUUID = () => {
+  const cryptoObj = getCrypto();
+  if (cryptoObj?.randomUUID) {
+    return cryptoObj.randomUUID();
+  }
+
+  // RFC4122 version 4 compliant fallback
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+    const rand = Math.floor(Math.random() * 16);
+    const value = char === "x" ? rand : (rand & 0x3) | 0x8;
+    return value.toString(16);
+  });
+};
+
 // I AM CFO Brand Colors
 const BRAND_COLORS = {
   primary: '#56B6E9',
@@ -566,9 +586,21 @@ export default function EnhancedMobileDashboard() {
 
   const computeFileHash = useCallback(async (file: Blob) => {
     const buffer = await file.arrayBuffer();
-    const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+    const cryptoObj = getCrypto();
+
+    if (cryptoObj?.subtle?.digest) {
+      const hashBuffer = await cryptoObj.subtle.digest("SHA-256", buffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    // Lightweight fallback hash if Web Crypto API is unavailable
+    let hash = 0;
+    const view = new Uint8Array(buffer);
+    for (let index = 0; index < view.length; index += 1) {
+      hash = (hash * 31 + view[index]) >>> 0;
+    }
+    return hash.toString(16).padStart(8, "0");
   }, []);
 
   const compressImage = useCallback(async (file: File) => {
@@ -796,7 +828,7 @@ export default function EnhancedMobileDashboard() {
                 duplicateNotified = true;
               } else {
                 const ext = uploadFile.name.split(".").pop() || "jpg";
-                const uploadPath = `mobile/${offline.logDate}-${crypto.randomUUID()}.${ext}`;
+                const uploadPath = `mobile/${offline.logDate}-${generateUUID()}.${ext}`;
                 const { error: uploadError } = await supabase
                   .storage
                   .from("production-photos")
@@ -1111,7 +1143,7 @@ export default function EnhancedMobileDashboard() {
             duplicateNotified = true;
           } else {
             const ext = productionPhotoFile.name.split(".").pop() || "jpg";
-            const uploadPath = `mobile/${productionForm.date}-${crypto.randomUUID()}.${ext}`;
+            const uploadPath = `mobile/${productionForm.date}-${generateUUID()}.${ext}`;
             const { error: uploadError } = await supabase
               .storage
               .from("production-photos")
@@ -1218,7 +1250,7 @@ export default function EnhancedMobileDashboard() {
     }
 
     const baseEntry: ProductionEntry = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       logDate: productionForm.date,
       tonnage,
       pricePerTon,
@@ -1254,7 +1286,7 @@ export default function EnhancedMobileDashboard() {
           duplicateNotified = true;
         } else {
           const ext = productionPhotoFile.name.split(".").pop() || "jpg";
-          const uploadPath = `mobile/${baseEntry.logDate}-${crypto.randomUUID()}.${ext}`;
+          const uploadPath = `mobile/${baseEntry.logDate}-${generateUUID()}.${ext}`;
           const { error: uploadError } = await supabase
             .storage
             .from("production-photos")
