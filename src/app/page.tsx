@@ -289,14 +289,28 @@ export default function FinancialOverviewPage() {
     entityCount: number;
     documentCount: number;
   };
-  type SummaryView = "payroll" | "ar" | "ap";
-  const [summaryView, setSummaryView] = useState<SummaryView>("payroll");
+  type TonnageStats = {
+    totalTonnage: number;
+    totalRevenue: number;
+    averageTonnage: number;
+    productionDays: number;
+  };
+  type TonnageSummary = {
+    current: TonnageStats;
+    previous: TonnageStats;
+    growth: number;
+  } | null;
+  type SummaryView = "tonnage" | "payroll" | "ar" | "ap";
+  const [summaryView, setSummaryView] = useState<SummaryView>("tonnage");
   const [arSummary, setArSummary] = useState<WorkingCapitalSummary | null>(null);
   const [apSummary, setApSummary] = useState<WorkingCapitalSummary | null>(null);
   const [arLoading, setArLoading] = useState(false);
   const [apLoading, setApLoading] = useState(false);
   const [arError, setArError] = useState<string | null>(null);
   const [apError, setApError] = useState<string | null>(null);
+  const [tonnageSummary, setTonnageSummary] = useState<TonnageSummary>(null);
+  const [tonnageLoading, setTonnageLoading] = useState(false);
+  const [tonnageError, setTonnageError] = useState<string | null>(null);
   const [selectedCustomers, setSelectedCustomers] = useState<Set<string>>(
     new Set(["All Customers"]),
   );
@@ -537,17 +551,33 @@ export default function FinancialOverviewPage() {
   // Load available customers for filter dropdown
   const fetchAvailableCustomers = async () => {
     try {
+      const customers = new Set<string>();
+
       const { data, error } = await supabase
         .from("journal_entry_lines")
         .select("customer")
         .not("customer", "is", null);
       if (error) throw error;
-      const customers = new Set<string>();
       data.forEach((row) => {
         if (row.customer && row.customer.trim()) {
           customers.add(row.customer.trim());
         }
       });
+
+      const { data: tonnageData, error: tonnageError } = await supabase
+        .from("wastex_production_logs")
+        .select("client_name")
+        .not("client_name", "is", null);
+      if (tonnageError) {
+        console.warn("Error fetching tonnage customers:", tonnageError);
+      } else {
+        tonnageData?.forEach((row) => {
+          if (row.client_name && row.client_name.trim()) {
+            customers.add(row.client_name.trim());
+          }
+        });
+      }
+
       setAvailableCustomers(["All Customers", ...Array.from(customers).sort()]);
     } catch (err) {
       console.error("Error fetching customers:", err);
@@ -1435,6 +1465,130 @@ export default function FinancialOverviewPage() {
     }
   };
 
+  const fetchTonnageSummary = async () => {
+    try {
+      setTonnageLoading(true);
+      setTonnageError(null);
+
+      const { startDate, endDate } = calculateDateRange();
+      const { prevStartDate, prevEndDate } = calculatePreviousDateRange(
+        startDate,
+        endDate,
+      );
+
+      const selected = Array.from(selectedCustomers).filter(
+        (customer) => customer !== "All Customers",
+      );
+
+      const summarizeEntries = (rows: any[]): TonnageStats => {
+        if (!rows.length) {
+          return {
+            totalTonnage: 0,
+            totalRevenue: 0,
+            averageTonnage: 0,
+            productionDays: 0,
+          };
+        }
+
+        let totalTonnage = 0;
+        let totalRevenue = 0;
+        const uniqueDays = new Set<string>();
+
+        rows.forEach((row) => {
+          const tonnageValue = Number(row.tonnage);
+          const validTonnage = Number.isFinite(tonnageValue) ? tonnageValue : 0;
+          totalTonnage += validTonnage;
+
+          const totalAmount = Number(row.total_amount);
+          if (Number.isFinite(totalAmount) && totalAmount !== 0) {
+            totalRevenue += totalAmount;
+          } else {
+            const pricePerTon = Number(row.price_per_ton);
+            if (Number.isFinite(pricePerTon)) {
+              totalRevenue += validTonnage * pricePerTon;
+            }
+          }
+
+          if (row.log_date) {
+            uniqueDays.add(row.log_date.split("T")[0]);
+          }
+        });
+
+        const productionDays = uniqueDays.size;
+        const averageTonnage = productionDays
+          ? totalTonnage / Math.max(productionDays, 1)
+          : 0;
+
+        return {
+          totalTonnage,
+          totalRevenue,
+          averageTonnage,
+          productionDays,
+        };
+      };
+
+      const fetchRange = async (
+        rangeStart: string,
+        rangeEnd: string,
+      ): Promise<TonnageStats> => {
+        const { data, error } = await supabase
+          .from("wastex_production_logs")
+          .select("log_date, tonnage, total_amount, price_per_ton, client_name")
+          .gte("log_date", rangeStart)
+          .lte("log_date", rangeEnd);
+
+        if (error) throw error;
+
+        const rows = (data || []).filter((row) => {
+          if (!row?.log_date) return false;
+          const withinRange = isDateInRange(row.log_date, rangeStart, rangeEnd);
+          if (!withinRange) return false;
+          if (!selected.length) return true;
+          return matchesSelectedCustomers(row.client_name || "", selected);
+        });
+
+        return summarizeEntries(rows);
+      };
+
+      const currentStats = await fetchRange(startDate, endDate);
+      let previousStats: TonnageStats = {
+        totalTonnage: 0,
+        totalRevenue: 0,
+        averageTonnage: 0,
+        productionDays: 0,
+      };
+
+      if (prevStartDate && prevEndDate) {
+        try {
+          previousStats = await fetchRange(prevStartDate, prevEndDate);
+        } catch (rangeError) {
+          console.warn("Failed to load previous tonnage range", rangeError);
+        }
+      }
+
+      const growth =
+        previousStats.totalTonnage === 0
+          ? currentStats.totalTonnage > 0
+            ? 100
+            : 0
+          : ((currentStats.totalTonnage - previousStats.totalTonnage) /
+              Math.abs(previousStats.totalTonnage)) *
+            100;
+
+      setTonnageSummary({
+        current: currentStats,
+        previous: previousStats,
+        growth,
+      });
+    } catch (e) {
+      const err = e as Error;
+      setTonnageError(err.message || "Failed to load tonnage data");
+      setTonnageSummary(null);
+    } finally {
+      setTonnageLoading(false);
+    }
+  };
+
   const handleSync = async () => {
     try {
       await fetch("/api/sync", { method: "POST" });
@@ -1446,6 +1600,7 @@ export default function FinancialOverviewPage() {
       fetchPayrollSummary();
       fetchARSummary();
       fetchAPSummary();
+      fetchTonnageSummary();
     }
   };
 
@@ -1458,6 +1613,7 @@ export default function FinancialOverviewPage() {
     fetchPayrollSummary();
     fetchARSummary();
     fetchAPSummary();
+    fetchTonnageSummary();
   }, [
     timePeriod,
     selectedMonth,
@@ -1485,6 +1641,12 @@ export default function FinancialOverviewPage() {
     }
     return formatCurrency(value);
   };
+
+  const formatTonnage = (value: number) =>
+    new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    }).format(value || 0);
 
   const formatPercentage = (value) => {
     return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
@@ -1892,7 +2054,7 @@ export default function FinancialOverviewPage() {
         ) : financialData ? (
           <div className="space-y-8">
             {/* Key Performance Indicators */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
               <div
                 className="bg-white p-6 rounded-lg shadow-sm border-l-4"
                 style={{ borderLeftColor: BRAND_COLORS.primary }}
@@ -1988,6 +2150,45 @@ export default function FinancialOverviewPage() {
                   <Activity
                     className="w-8 h-8"
                     style={{ color: BRAND_COLORS.warning }}
+                  />
+                </div>
+              </div>
+
+              <div
+                className="bg-white p-6 rounded-lg shadow-sm border-l-4"
+                style={{ borderLeftColor: BRAND_COLORS.accent }}
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-gray-600 text-sm font-medium mb-2">
+                      Total Tonnage
+                    </div>
+                    <div className="text-2xl font-bold text-gray-900">
+                      {formatTonnage(
+                        tonnageSummary?.current.totalTonnage ?? 0,
+                      )}
+                      <span className="ml-1 text-sm font-semibold text-gray-500">
+                        tons
+                      </span>
+                    </div>
+                    <div
+                      className={`flex items-center text-xs font-medium mt-1 ${
+                        (tonnageSummary?.growth ?? 0) >= 0
+                          ? "text-green-600"
+                          : "text-red-600"
+                      }`}
+                    >
+                      {(tonnageSummary?.growth ?? 0) >= 0 ? (
+                        <ArrowUpRight className="w-3 h-3 mr-1" />
+                      ) : (
+                        <ArrowDownRight className="w-3 h-3 mr-1" />
+                      )}
+                      {formatPercentage(tonnageSummary?.growth ?? 0)} {comparisonLabel}
+                    </div>
+                  </div>
+                  <PieChart
+                    className="w-8 h-8"
+                    style={{ color: BRAND_COLORS.accent }}
                   />
                 </div>
               </div>
@@ -2339,50 +2540,119 @@ export default function FinancialOverviewPage() {
             </div>
 
             {/* Financial Health Summary */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Payroll & Working Capital Summary */}
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+              {/* Tonnage, Payroll & Working Capital Summary */}
               <div className="bg-white rounded-lg shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-gray-200">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div>
-                      <h3 className="text-lg font-semibold text-gray-900">
-                        {summaryView === "payroll"
-                          ? "Payroll Summary"
-                          : summaryView === "ar"
-                            ? "A/R Summary"
-                            : "A/P Summary"}
-                      </h3>
+                      <div className="flex items-center gap-3">
+                        <h3 className="text-lg font-semibold text-gray-900">
+                          {summaryView === "tonnage"
+                            ? "Tonnage Summary"
+                            : summaryView === "payroll"
+                              ? "Payroll Summary"
+                              : summaryView === "ar"
+                                ? "A/R Summary"
+                                : "A/P Summary"}
+                        </h3>
+                        {summaryView === "tonnage" && (
+                          <span className="hidden sm:inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600">
+                            {timePeriod}
+                          </span>
+                        )}
+                      </div>
                       <div className="text-sm text-gray-600 mt-1">
-                        {summaryView === "payroll"
-                          ? "Overview of payroll activity"
-                          : summaryView === "ar"
-                            ? "Snapshot of receivables aging"
-                            : "Snapshot of payables aging"}
+                        {summaryView === "tonnage"
+                          ? "Production volume captured in Wastex logs"
+                          : summaryView === "payroll"
+                            ? "Overview of payroll activity"
+                            : summaryView === "ar"
+                              ? "Snapshot of receivables aging"
+                              : "Snapshot of payables aging"}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      {(["payroll", "ar", "ap"] as const).map((key) => (
-                        <Button
+                      {(["tonnage", "payroll", "ar", "ap"] as const).map((key) => (
+                        <button
                           key={key}
-                          className={`${TOGGLE_BASE_CLASSES} ${
+                          type="button"
+                          aria-pressed={summaryView === key}
+                          className={`${TOGGLE_BASE_CLASSES} whitespace-nowrap ${
                             summaryView === key
                               ? TOGGLE_ACTIVE_CLASSES
                               : TOGGLE_INACTIVE_CLASSES
                           }`}
                           onClick={() => setSummaryView(key)}
                         >
-                          {key === "payroll"
-                            ? "Payroll"
-                            : key === "ar"
-                              ? "A/R"
-                              : "A/P"}
-                        </Button>
+                          {key === "tonnage"
+                            ? "Tonnage"
+                            : key === "payroll"
+                              ? "Payroll"
+                              : key === "ar"
+                                ? "A/R"
+                                : "A/P"}
+                        </button>
                       ))}
                     </div>
                   </div>
                 </div>
                 <div className="p-6">
-                  {summaryView === "payroll" ? (
+                  {summaryView === "tonnage" ? (
+                    tonnageLoading ? (
+                      <div className="text-sm text-gray-500">Loading...</div>
+                    ) : tonnageError ? (
+                      <div className="text-sm text-red-500">{tonnageError}</div>
+                    ) : tonnageSummary ? (
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <div className="text-gray-500">Total Tonnage</div>
+                          <div className="text-lg font-semibold">
+                            {formatTonnage(tonnageSummary.current.totalTonnage)} tons
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Total Revenue</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(tonnageSummary.current.totalRevenue)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Avg Tons / Day</div>
+                          <div className="text-lg font-semibold">
+                            {formatTonnage(tonnageSummary.current.averageTonnage)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Production Days</div>
+                          <div className="text-lg font-semibold">
+                            {tonnageSummary.current.productionDays.toLocaleString()}
+                          </div>
+                        </div>
+                        <div className="col-span-2">
+                          <div className="text-xs text-gray-500">
+                            Change {comparisonLabel}
+                          </div>
+                          <div
+                            className={`mt-1 flex items-center text-sm font-medium ${
+                              tonnageSummary.growth >= 0
+                                ? "text-green-600"
+                                : "text-red-600"
+                            }`}
+                          >
+                            {tonnageSummary.growth >= 0 ? (
+                              <ArrowUpRight className="h-4 w-4 mr-1" />
+                            ) : (
+                              <ArrowDownRight className="h-4 w-4 mr-1" />
+                            )}
+                            {formatPercentage(tonnageSummary.growth)}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-500">No tonnage data</div>
+                    )
+                  ) : summaryView === "payroll" ? (
                     payrollLoading ? (
                       <div className="text-sm text-gray-500">Loading...</div>
                     ) : payrollError ? (
@@ -2512,6 +2782,10 @@ export default function FinancialOverviewPage() {
                         No {workingCapitalState.labels.view} data
                       </div>
                     )
+                  ) : summaryView === "ar" ? (
+                    <div className="text-sm text-gray-500">No A/R data</div>
+                  ) : summaryView === "ap" ? (
+                    <div className="text-sm text-gray-500">No A/P data</div>
                   ) : null}
                 </div>
               </div>
