@@ -1,9 +1,22 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
-import { Calendar, Download, RefreshCw, Plus, X, TrendingUp, Package, DollarSign, BarChart3, FileText, Users } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Download,
+  RefreshCw,
+  X,
+  TrendingUp,
+  Package,
+  DollarSign,
+  BarChart3,
+  FileText,
+  Image as ImageIcon,
+} from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { supabase } from '@/lib/supabaseClient';
+
+const PRODUCTION_PHOTO_BUCKET = 'production-photos';
+const isAbsoluteUrl = (value: string) => /^https?:\/\//i.test(value);
 
 // Brand Colors
 const BRAND_COLORS = {
@@ -42,7 +55,11 @@ interface ProductionLog {
   approval_name: string;
   file_name: string;
   folder_path: string;
-  file_url: string;
+  file_url: string | null;
+  raw_file_reference: string | null;
+  photo_storage_path: string | null;
+  photo_bucket: string | null;
+  photo_hash: string | null;
   last_modified: string;
   processing_status: string;
   created_at: string;
@@ -62,6 +79,7 @@ type SupabaseProductionLog = {
   file_name?: string | null;
   folder_path?: string | null;
   file_url?: string | null;
+  photo_hash?: string | null;
   last_modified?: string | null;
   processing_status?: string | null;
   created_at?: string | null;
@@ -111,8 +129,99 @@ const WasteXDashboard: React.FC = () => {
   const [notification, setNotification] = useState<{show: boolean; message: string; type: 'success' | 'error' | 'info'}>({
     show: false, message: '', type: 'info'
   });
+  interface PhotoModalState {
+    open: boolean;
+    url: string;
+    title: string;
+    bucket: string | null;
+    storagePath: string | null;
+    rawUrl: string | null;
+    isLoading: boolean;
+  }
 
-  const normalizeProductionLogs = (logs: SupabaseProductionLog[]): ProductionLog[] => {
+  const [photoModal, setPhotoModal] = useState<PhotoModalState>({
+    open: false,
+    url: '',
+    title: '',
+    bucket: null,
+    storagePath: null,
+    rawUrl: null,
+    isLoading: false
+  });
+  const [photoLoadFailed, setPhotoLoadFailed] = useState(false);
+  const notificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const parseStorageReference = useCallback((value: string) => {
+    const storageProtocolMatch = value.match(/^storage:\/\/([^/]+)\/(.+)$/i);
+    if (storageProtocolMatch) {
+      return {
+        bucket: storageProtocolMatch[1],
+        path: storageProtocolMatch[2]
+      };
+    }
+
+    const trimmed = value.replace(/^\/+/, '');
+    if (!trimmed) {
+      return {
+        bucket: PRODUCTION_PHOTO_BUCKET,
+        path: ''
+      };
+    }
+
+    if (trimmed.startsWith(`${PRODUCTION_PHOTO_BUCKET}/`)) {
+      return {
+        bucket: PRODUCTION_PHOTO_BUCKET,
+        path: trimmed.slice(PRODUCTION_PHOTO_BUCKET.length + 1)
+      };
+    }
+
+    return {
+      bucket: PRODUCTION_PHOTO_BUCKET,
+      path: trimmed
+    };
+  }, []);
+
+  const resolveProductionPhoto = useCallback((rawReference: string | null | undefined) => {
+    if (!rawReference) {
+      return {
+        publicUrl: null as string | null,
+        bucket: null as string | null,
+        storagePath: null as string | null,
+        rawUrl: null as string | null
+      };
+    }
+
+    if (isAbsoluteUrl(rawReference)) {
+      return {
+        publicUrl: rawReference,
+        bucket: null,
+        storagePath: null,
+        rawUrl: rawReference
+      };
+    }
+
+    const { bucket, path } = parseStorageReference(rawReference);
+
+    if (!path) {
+      return {
+        publicUrl: null,
+        bucket,
+        storagePath: null,
+        rawUrl: rawReference
+      };
+    }
+
+    const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+
+    return {
+      publicUrl: data?.publicUrl ?? null,
+      bucket,
+      storagePath: path,
+      rawUrl: rawReference
+    };
+  }, [parseStorageReference]);
+
+  const normalizeProductionLogs = useCallback((logs: SupabaseProductionLog[]): ProductionLog[] => {
     return logs.map((log) => {
       const id = log.id ? String(log.id) : `${log.log_date ?? "unknown"}-${log.client_name ?? "client"}`;
       const logDateRaw = log.log_date ?? null;
@@ -128,6 +237,9 @@ const WasteXDashboard: React.FC = () => {
         log.total_amount ?? (Number.isFinite(tonnage * pricePerTon) ? tonnage * pricePerTon : 0)
       );
       const totalAmount = Number.isFinite(totalAmountValue) ? totalAmountValue : tonnage * pricePerTon;
+
+      const photo = resolveProductionPhoto(log.file_url ?? null);
+      const resolvedUrl = photo.publicUrl ?? null;
 
       return {
         id,
@@ -146,90 +258,89 @@ const WasteXDashboard: React.FC = () => {
         approval_name: log.approval_name ?? 'Pending Approval',
         file_name: log.file_name ?? 'N/A',
         folder_path: log.folder_path ?? '',
-        file_url: log.file_url ?? '#',
+        file_url: resolvedUrl,
+        raw_file_reference: typeof log.file_url === 'string' ? log.file_url : null,
+        photo_storage_path: photo.storagePath,
+        photo_bucket: photo.bucket,
+        photo_hash: log.photo_hash ?? null,
         last_modified: log.last_modified ?? '',
         processing_status: log.processing_status ?? 'Pending',
         created_at: log.created_at ?? ''
       };
     });
-  };
+  }, [resolveProductionPhoto, selectedMonth, selectedYear]);
+
+  const requestSignedUrl = useCallback(async (bucket: string, path: string) => {
+    const sanitizedPath = path.replace(/^\/+/, '');
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(sanitizedPath, 120);
+    if (error) {
+      throw error;
+    }
+    return data?.signedUrl ?? null;
+  }, []);
+
+  const showNotification = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setNotification({ show: true, message, type });
+    if (notificationTimeoutRef.current) {
+      clearTimeout(notificationTimeoutRef.current);
+    }
+    notificationTimeoutRef.current = setTimeout(() => {
+      setNotification({ show: false, message: '', type: 'info' });
+    }, 3000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (notificationTimeoutRef.current) {
+        clearTimeout(notificationTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Load data from Supabase
-  const loadProductionData = async () => {
-    console.group('🚛 WasteX Production Logs Fetch');
+  const loadProductionData = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
 
-      console.log('🔌 Testing Supabase connection to wastex_production_logs...');
-      const {
-        error: connectionError,
-        count: connectionCount
-      } = await supabase
-        .from('wastex_production_logs')
-        .select('id', { count: 'exact', head: true });
-
-      if (connectionError) {
-        console.error('❌ Supabase connection test failed:', connectionError);
-        throw new Error(`Supabase connection test failed: ${connectionError.message}`);
-      }
-
-      console.log(
-        `✅ Supabase connection succeeded. Accessible rows: ${
-          typeof connectionCount === 'number' ? connectionCount : 'unknown'
-        }`
-      );
-
-      const { data, error: fetchError, status } = await supabase
+      const { data, error: fetchError } = await supabase
         .from('wastex_production_logs')
         .select('*')
-        .order('log_date', { ascending: false });
+        .order('log_date', { ascending: false })
+        .limit(200);
 
       if (fetchError) {
-        console.error('❌ Supabase fetch error:', { status, fetchError });
-        throw new Error(`Failed to fetch production logs: ${fetchError.message}`);
+        throw fetchError;
       }
 
       const normalized = normalizeProductionLogs((data ?? []) as SupabaseProductionLog[]);
-      console.log(`📦 Retrieved ${data?.length ?? 0} rows. Normalized entries: ${normalized.length}.`);
-
-      if ((data?.length ?? 0) === 0) {
-        if (typeof connectionCount === 'number' && connectionCount > 0) {
-          console.warn('⚠️ Table has rows but query returned none. Check RLS policies or filters.');
-        } else {
-          console.warn('ℹ️ No production logs returned from Supabase.');
-        }
-      }
 
       if (normalized.length > 0) {
         setProductionLogs(normalized);
-        showNotification('Production data loaded successfully', 'success');
       } else {
         setProductionLogs([]);
-        showNotification('No production logs found. Check your filters or add new entries.', 'info');
+        showNotification('No production logs found. Try selecting a different range.', 'info');
       }
     } catch (err) {
       console.error('🚨 Error loading production data from Supabase:', err);
       const message = err instanceof Error ? err.message : 'Failed to load production data. Using demo data.';
       setError(message);
 
-      // Fallback to demo data
-      setProductionLogs([
+      const fallbackLogs: SupabaseProductionLog[] = [
         {
           id: '1',
           year: 2025,
           month: 9,
           log_date: '2025-09-26',
           tonnage: 80.0,
-          price_per_ton: 20.00,
-          total_amount: 1600.00,
+          price_per_ton: 20.0,
+          total_amount: 1600.0,
           client_name: 'Panzarella',
           project_deliverable: 'MRF',
           approval_name: 'Michael Cruz',
           file_name: '09.26.2025 - 80 Tons.jpg',
           folder_path: 'Wastex - Production Log/2025/09.2025',
           file_url: 'https://drive.google.com/file/d/example1',
-          last_modified: '2025-09-27T07:42:00Z',
           processing_status: 'Processed',
           created_at: '2025-09-27T07:42:00Z'
         },
@@ -239,15 +350,14 @@ const WasteXDashboard: React.FC = () => {
           month: 9,
           log_date: '2025-09-25',
           tonnage: 75.0,
-          price_per_ton: 20.00,
-          total_amount: 1500.00,
+          price_per_ton: 20.0,
+          total_amount: 1500.0,
           client_name: 'Metro Waste',
           project_deliverable: 'Collection',
           approval_name: 'Sarah Johnson',
           file_name: '09.25.2025 - 75 Tons.jpg',
           folder_path: 'Wastex - Production Log/2025/09.2025',
           file_url: 'https://drive.google.com/file/d/example2',
-          last_modified: '2025-09-27T07:34:00Z',
           processing_status: 'Processed',
           created_at: '2025-09-27T07:34:00Z'
         },
@@ -257,15 +367,14 @@ const WasteXDashboard: React.FC = () => {
           month: 9,
           log_date: '2025-09-24',
           tonnage: 176.0,
-          price_per_ton: 20.00,
-          total_amount: 3520.00,
+          price_per_ton: 20.0,
+          total_amount: 3520.0,
           client_name: 'City Municipal',
           project_deliverable: 'Bulk Collection',
           approval_name: 'Mike Davis',
           file_name: '09.24.2025 - 176 Tons.jpg',
           folder_path: 'Wastex - Production Log/2025/09.2025',
           file_url: 'https://drive.google.com/file/d/example3',
-          last_modified: '2025-09-27T07:34:00Z',
           processing_status: 'Processed',
           created_at: '2025-09-27T07:34:00Z'
         },
@@ -275,29 +384,29 @@ const WasteXDashboard: React.FC = () => {
           month: 9,
           log_date: '2025-09-23',
           tonnage: 111.0,
-          price_per_ton: 20.00,
-          total_amount: 2220.00,
+          price_per_ton: 20.0,
+          total_amount: 2220.0,
           client_name: 'Industrial Services',
           project_deliverable: 'Commercial',
           approval_name: 'Lisa Brown',
           file_name: '09.23.2025 - 111 Tons.jpg',
           folder_path: 'Wastex - Production Log/2025/09.2025',
           file_url: 'https://drive.google.com/file/d/example4',
-          last_modified: '2025-09-27T07:35:00Z',
           processing_status: 'Processed',
           created_at: '2025-09-27T07:35:00Z'
         }
-      ]);
+      ];
+
+      setProductionLogs(normalizeProductionLogs(fallbackLogs));
       showNotification('Using demo data - check Supabase connection', 'error');
     } finally {
       setLoading(false);
-      console.groupEnd();
     }
-  };
+  }, [normalizeProductionLogs, showNotification]);
 
   useEffect(() => {
-    loadProductionData();
-  }, []);
+    void loadProductionData();
+  }, [loadProductionData]);
 
   // Utility functions
   const formatCurrency = (amount: number): string => {
@@ -321,12 +430,98 @@ const WasteXDashboard: React.FC = () => {
     return `${tonnage.toFixed(1)} tons`;
   };
 
-  const showNotification = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
-    setNotification({ show: true, message, type });
-    setTimeout(() => {
-      setNotification({ show: false, message: '', type: 'info' });
-    }, 3000);
+  const closePhotoModal = () => {
+    setPhotoModal({
+      open: false,
+      url: '',
+      title: '',
+      bucket: null,
+      storagePath: null,
+      rawUrl: null,
+      isLoading: false
+    });
+    setPhotoLoadFailed(false);
   };
+
+  const handleOpenPhoto = async (log: ProductionLog) => {
+    const hasPhotoReference = Boolean(log.file_url || log.photo_storage_path || log.raw_file_reference);
+    if (!hasPhotoReference) {
+      showNotification('No production photo is available for this entry yet.', 'info');
+      return;
+    }
+
+    setPhotoLoadFailed(false);
+
+    const shouldFetchSignedUrl = !log.file_url && Boolean(log.photo_storage_path && log.photo_bucket);
+
+    setPhotoModal({
+      open: true,
+      url: log.file_url ?? '',
+      title: log.file_name || formatDate(log.log_date),
+      bucket: log.photo_bucket,
+      storagePath: log.photo_storage_path,
+      rawUrl: log.raw_file_reference,
+      isLoading: shouldFetchSignedUrl
+    });
+
+    if (shouldFetchSignedUrl && log.photo_bucket && log.photo_storage_path) {
+      try {
+        const signedUrl = await requestSignedUrl(log.photo_bucket, log.photo_storage_path);
+        if (signedUrl) {
+          setPhotoModal((prev) => (
+            prev.open
+              ? {
+                  ...prev,
+                  url: signedUrl,
+                  isLoading: false
+                }
+              : prev
+          ));
+        } else {
+          setPhotoModal((prev) => (prev.open ? { ...prev, isLoading: false } : prev));
+          setPhotoLoadFailed(true);
+        }
+      } catch (error) {
+        console.error('Failed to create signed production photo URL', error);
+        setPhotoModal((prev) => (prev.open ? { ...prev, isLoading: false } : prev));
+        setPhotoLoadFailed(true);
+        showNotification('Unable to open the production photo right now. Please try again later.', 'error');
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!photoLoadFailed || !photoModal.storagePath || !photoModal.bucket) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    const refreshSignedUrl = async () => {
+      try {
+        setPhotoModal((prev) => (prev.open ? { ...prev, isLoading: true } : prev));
+        const signedUrl = await requestSignedUrl(photoModal.bucket!, photoModal.storagePath!);
+        if (!isCancelled && signedUrl) {
+          setPhotoLoadFailed(false);
+          setPhotoModal((prev) => (prev.open ? { ...prev, url: signedUrl, isLoading: false } : prev));
+        } else if (!isCancelled) {
+          setPhotoModal((prev) => (prev.open ? { ...prev, isLoading: false } : prev));
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          console.error('Failed to refresh production photo link', error);
+          setPhotoModal((prev) => (prev.open ? { ...prev, isLoading: false } : prev));
+          showNotification('Unable to refresh the production photo link. Try again shortly.', 'error');
+        }
+      }
+    };
+
+    void refreshSignedUrl();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [photoLoadFailed, photoModal.bucket, photoModal.storagePath, requestSignedUrl, showNotification]);
 
   // Filter data based on selected period
   const getFilteredData = (): ProductionLog[] => {
@@ -720,8 +915,12 @@ const WasteXDashboard: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {getFilteredData().map((log) => (
-                  <tr key={log.id} className="hover:bg-gray-50 transition-colors">
+                {getFilteredData().map((log) => {
+                  const hasPhotoReference = Boolean(log.file_url || log.photo_storage_path || log.raw_file_reference);
+                  const photoTitle = log.file_name || formatDate(log.log_date);
+
+                  return (
+                    <tr key={log.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                       {formatDate(log.log_date)}
                     </td>
@@ -749,22 +948,55 @@ const WasteXDashboard: React.FC = () => {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <button
-                        onClick={() => window.open(log.file_url, '_blank')}
-                        className="hover:text-gray-900 mr-3"
-                        style={{ color: BRAND_COLORS.primary }}
-                      >
-                        View File
-                      </button>
-                      <button
-                        onClick={() => showNotification(`Viewing details for ${log.file_name}`, 'info')}
-                        className="text-gray-600 hover:text-gray-900"
-                      >
-                        Details
-                      </button>
+                      <div className="flex items-center gap-4">
+                        <button
+                          type="button"
+                          onClick={() => void handleOpenPhoto(log)}
+                          className="text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                          style={{
+                            color: hasPhotoReference ? BRAND_COLORS.primary : BRAND_COLORS.gray[400]
+                          }}
+                          disabled={!hasPhotoReference}
+                        >
+                          View Photo
+                        </button>
+                        {hasPhotoReference ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleOpenPhoto(log)}
+                            className="group relative h-12 w-12 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 shadow-sm transition-transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                          >
+                            {log.file_url ? (
+                              <img
+                                src={log.file_url}
+                                alt={`Production photo preview for ${photoTitle}`}
+                                className="h-full w-full object-cover"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center bg-gray-100">
+                                <ImageIcon className="h-5 w-5 text-gray-400" />
+                              </div>
+                            )}
+                            <span className="sr-only">Open production photo for {photoTitle}</span>
+                          </button>
+                        ) : (
+                          <span className="flex items-center gap-1 text-xs text-gray-400">
+                            <ImageIcon className="h-4 w-4" />
+                            No Photo
+                          </span>
+                        )}
+                        <button
+                          onClick={() => showNotification(`Viewing details for ${log.file_name}`, 'info')}
+                          className="text-gray-600 hover:text-gray-900"
+                        >
+                          Details
+                        </button>
+                      </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -782,10 +1014,96 @@ const WasteXDashboard: React.FC = () => {
       {/* Notification */}
       {notification.show && (
         <div className={`fixed top-5 right-5 z-50 px-6 py-4 rounded-lg text-white font-medium shadow-lg transition-transform ${
-          notification.type === 'success' ? 'bg-green-500' : 
+          notification.type === 'success' ? 'bg-green-500' :
           notification.type === 'error' ? 'bg-red-500' : 'bg-blue-500'
         }`}>
           {notification.message}
+        </div>
+      )}
+
+      {photoModal.open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4"
+          onClick={closePhotoModal}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full overflow-hidden"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Production Photo</h3>
+                {photoModal.title && (
+                  <p className="text-sm text-gray-500 mt-1 truncate max-w-[18rem] sm:max-w-none">
+                    {photoModal.title}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={closePhotoModal}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              {photoModal.url && !photoLoadFailed ? (
+                <div className="relative w-full max-h-[70vh] rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
+                  <img
+                    src={photoModal.url}
+                    alt={photoModal.title || 'Production photo preview'}
+                    className="w-full h-full object-contain bg-gray-100"
+                    onError={() => setPhotoLoadFailed(true)}
+                  />
+                </div>
+              ) : photoModal.isLoading ? (
+                <div className="flex flex-col items-center justify-center space-y-4 py-16 text-center text-gray-500">
+                  <RefreshCw className="h-6 w-6 animate-spin text-blue-500" />
+                  <div>
+                    <p className="font-medium">Loading production photo…</p>
+                    {photoModal.storagePath && (
+                      <p className="text-sm text-gray-400">Requesting a secure Supabase link for {photoModal.storagePath}.</p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center text-center text-gray-500 py-16 space-y-4">
+                  <ImageIcon className="w-10 h-10 text-gray-400" />
+                  <div className="space-y-1">
+                    <p className="font-medium">
+                      {photoLoadFailed ? "We couldn't load this photo." : 'No preview is available for this photo.'}
+                    </p>
+                    <p className="text-sm text-gray-400">
+                      {photoModal.storagePath
+                        ? 'The file may require a refreshed signed link. Try opening the original file below.'
+                        : 'The file may have been moved or is no longer available.'}
+                    </p>
+                    {photoModal.storagePath && (
+                      <code className="block rounded bg-gray-100 px-3 py-1 text-xs text-gray-500">
+                        {photoModal.storagePath}
+                      </code>
+                    )}
+                  </div>
+                  {(photoModal.url || photoModal.rawUrl) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const link = photoModal.url || photoModal.rawUrl;
+                        if (link) {
+                          window.open(link, '_blank');
+                        }
+                      }}
+                      className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white rounded-lg shadow-sm"
+                      style={{ backgroundColor: BRAND_COLORS.primary }}
+                    >
+                      Open Original File
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
