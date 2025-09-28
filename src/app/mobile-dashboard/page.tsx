@@ -1543,7 +1543,7 @@ export default function EnhancedMobileDashboard() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!navigator.onLine) return;
+    if ("onLine" in navigator && navigator.onLine === false) return;
     if (productionEntries.some((entry) => entry.localOnly)) {
       syncOfflineEntries(productionEntries);
     }
