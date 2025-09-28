@@ -2540,7 +2540,7 @@ export default function FinancialOverviewPage() {
             </div>
 
             {/* Financial Health Summary */}
-            <div className="grid grid-cols-1 gap-8">
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
               {/* Tonnage, Payroll & Working Capital Summary */}
               <div className="bg-white rounded-lg shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-gray-200">
@@ -2574,9 +2574,11 @@ export default function FinancialOverviewPage() {
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                       {(["tonnage", "payroll", "ar", "ap"] as const).map((key) => (
-                        <Button
+                        <button
                           key={key}
-                          className={`${TOGGLE_BASE_CLASSES} ${
+                          type="button"
+                          aria-pressed={summaryView === key}
+                          className={`${TOGGLE_BASE_CLASSES} whitespace-nowrap ${
                             summaryView === key
                               ? TOGGLE_ACTIVE_CLASSES
                               : TOGGLE_INACTIVE_CLASSES
@@ -2590,7 +2592,7 @@ export default function FinancialOverviewPage() {
                               : key === "ar"
                                 ? "A/R"
                                 : "A/P"}
-                        </Button>
+                        </button>
                       ))}
                     </div>
                   </div>
