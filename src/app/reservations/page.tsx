@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Calendar, Download, RefreshCw, TrendingUp, Package, DollarSign, BarChart3, FileText, ChevronDown } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
+import type { TooltipProps } from 'recharts';
 import { supabase } from '@/lib/supabaseClient';
 
 // Brand Colors
@@ -381,6 +382,17 @@ const WasteXDashboard: React.FC = () => {
     }).format(amount);
   };
 
+  const formatNumber = (
+    value: number,
+    options?: Intl.NumberFormatOptions
+  ): string => {
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+      ...options
+    }).format(value);
+  };
+
   const formatDate = (dateString: string): string => {
     return new Date(dateString).toLocaleDateString('en-US', {
       month: 'short',
@@ -400,6 +412,13 @@ const WasteXDashboard: React.FC = () => {
     });
 
     return `${formatter.format(tonnage)} tons`;
+  };
+
+  const formatAxisTonnage = (value: number): string => {
+    return formatNumber(value, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 1
+    });
   };
 
   const formatPercentageChange = (value: number): string => {
@@ -469,6 +488,31 @@ const WasteXDashboard: React.FC = () => {
 
     const revenueValue = Number.isFinite(numericValue) ? numericValue : Number(value);
     return [formatCurrency(revenueValue), 'Revenue'];
+  };
+
+  const renderClientTooltip = (
+    props: TooltipProps<number, string>
+  ): JSX.Element | null => {
+    if (!props.active || !props.payload?.length) {
+      return null;
+    }
+
+    const { payload } = props.payload[0];
+    const clientName = payload?.name ?? 'Client';
+    const revenueValue = typeof props.payload[0].value === 'number'
+      ? props.payload[0].value
+      : Number(props.payload[0].value ?? 0);
+    const percent = typeof payload?.percent === 'number' ? payload.percent * 100 : null;
+
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
+        <p className="text-sm font-semibold text-gray-900">{clientName}</p>
+        <p className="text-sm text-gray-700">{formatCurrency(revenueValue)}</p>
+        {percent !== null && (
+          <p className="text-xs text-gray-500">{percent.toFixed(1)}% of revenue</p>
+        )}
+      </div>
+    );
   };
 
   const showNotification = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -1076,14 +1120,23 @@ const WasteXDashboard: React.FC = () => {
             <div className="p-6">
               <ResponsiveContainer width="100%" height={350}>
                 {chartType === 'line' ? (
-                  <LineChart data={chartData}>
+                  <LineChart
+                    data={chartData}
+                    margin={{ top: 20, right: 70, left: 20, bottom: 20 }}
+                  >
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="label" />
-                    <YAxis yAxisId="tonnage" orientation="left" />
+                    <YAxis
+                      yAxisId="tonnage"
+                      orientation="left"
+                      tickFormatter={(value) => formatAxisTonnage(Number(value))}
+                      tickMargin={12}
+                    />
                     <YAxis
                       yAxisId="revenue"
                       orientation="right"
                       tickFormatter={(value) => formatCurrency(value)}
+                      tickMargin={12}
                     />
                     <Tooltip formatter={formatTooltipValue} />
                     <Legend />
@@ -1107,14 +1160,23 @@ const WasteXDashboard: React.FC = () => {
                     />
                   </LineChart>
                 ) : (
-                  <BarChart data={chartData}>
+                  <BarChart
+                    data={chartData}
+                    margin={{ top: 20, right: 70, left: 20, bottom: 20 }}
+                  >
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="label" />
-                    <YAxis yAxisId="tonnage" orientation="left" />
+                    <YAxis
+                      yAxisId="tonnage"
+                      orientation="left"
+                      tickFormatter={(value) => formatAxisTonnage(Number(value))}
+                      tickMargin={12}
+                    />
                     <YAxis
                       yAxisId="revenue"
                       orientation="right"
                       tickFormatter={(value) => formatCurrency(value)}
+                      tickMargin={12}
                     />
                     <Tooltip formatter={formatTooltipValue} />
                     <Legend />
@@ -1143,12 +1205,12 @@ const WasteXDashboard: React.FC = () => {
             </div>
             <div className="p-6">
               <ResponsiveContainer width="100%" height={350}>
-                <PieChart>
-                  <Pie
-                    data={clientDistribution}
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={120}
+                  <PieChart>
+                    <Pie
+                      data={clientDistribution}
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={120}
                     dataKey="value"
                     label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
                   >
@@ -1156,7 +1218,7 @@ const WasteXDashboard: React.FC = () => {
                       <Cell key={`cell-${index}`} fill={pieColors[index % pieColors.length]} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(value: any) => [formatCurrency(Number(value)), 'Revenue']} />
+                  <Tooltip content={renderClientTooltip} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
