@@ -1633,13 +1633,19 @@ export default function FinancialOverviewPage() {
     }).format(value || 0);
   };
 
+  const trimTrailingZero = (formatted: string) =>
+    formatted.endsWith(".0") ? formatted.slice(0, -2) : formatted;
+
   const formatCompactCurrency = (value) => {
-    if (Math.abs(value) >= 1000000) {
-      return `${(value / 1000000).toFixed(1)}M`;
-    } else if (Math.abs(value) >= 1000) {
-      return `${(value / 1000).toFixed(1)}K`;
+    const numericValue = value || 0;
+    const absValue = Math.abs(numericValue);
+
+    if (absValue >= 1000000) {
+      return `${trimTrailingZero((numericValue / 1000000).toFixed(1))}M`;
+    } else if (absValue >= 1000) {
+      return `${trimTrailingZero((numericValue / 1000).toFixed(1))}K`;
     }
-    return formatCurrency(value);
+    return formatCurrency(numericValue);
   };
 
   const formatTonnage = (value: number) =>
@@ -1647,6 +1653,21 @@ export default function FinancialOverviewPage() {
       minimumFractionDigits: 0,
       maximumFractionDigits: 2,
     }).format(value || 0);
+
+  const formatCompactTonnage = (value: number) => {
+    const numericValue = value || 0;
+    const absValue = Math.abs(numericValue);
+
+    if (absValue >= 1000000) {
+      return `${trimTrailingZero((numericValue / 1000000).toFixed(1))}M`;
+    }
+
+    if (absValue >= 1000) {
+      return `${trimTrailingZero((numericValue / 1000).toFixed(1))}K`;
+    }
+
+    return formatTonnage(numericValue);
+  };
 
   const formatPercentage = (value) => {
     return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
@@ -2164,7 +2185,7 @@ export default function FinancialOverviewPage() {
                       Total Tonnage
                     </div>
                     <div className="text-2xl font-bold text-gray-900">
-                      {formatTonnage(
+                      {formatCompactTonnage(
                         tonnageSummary?.current.totalTonnage ?? 0,
                       )}
                       <span className="ml-1 text-sm font-semibold text-gray-500">
