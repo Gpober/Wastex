@@ -1360,8 +1360,6 @@ const WasteXDashboard: React.FC = () => {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tonnage</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Price/Ton</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Revenue</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Approval</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
@@ -1386,10 +1384,7 @@ const WasteXDashboard: React.FC = () => {
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600">
                       {formatCurrency(log.total_amount)}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {log.approval_name || 'Pending'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                         {log.processing_status && !/^https?:\/\//i.test(log.processing_status) && (
                           <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
@@ -1410,23 +1405,13 @@ const WasteXDashboard: React.FC = () => {
                         ) : (
                           <span className="text-xs text-gray-500">No photo available</span>
                         )}
+                        <button
+                          onClick={() => showNotification(`Viewing details for ${log.file_name}`, 'info')}
+                          className="text-xs font-semibold text-gray-600 hover:text-gray-900"
+                        >
+                          Details
+                        </button>
                       </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <button
-                        onClick={() => handleViewPhoto(log)}
-                        className="hover:text-gray-900 mr-3 inline-flex items-center gap-2"
-                        style={{ color: BRAND_COLORS.primary }}
-                      >
-                        <Eye className="w-4 h-4" />
-                        View Photo
-                      </button>
-                      <button
-                        onClick={() => showNotification(`Viewing details for ${log.file_name}`, 'info')}
-                        className="text-gray-600 hover:text-gray-900"
-                      >
-                        Details
-                      </button>
                     </td>
                   </tr>
                 ))}
