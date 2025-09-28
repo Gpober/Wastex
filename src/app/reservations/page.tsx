@@ -1,7 +1,22 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Calendar, Download, RefreshCw, TrendingUp, Package, DollarSign, BarChart3, FileText, ChevronDown } from 'lucide-react';
+import {
+  Calendar,
+  Download,
+  RefreshCw,
+  TrendingUp,
+  Package,
+  DollarSign,
+  BarChart3,
+  FileText,
+  ChevronDown,
+  Eye,
+  Loader2,
+  X,
+  ZoomIn,
+  ZoomOut
+} from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
 import type { TooltipProps } from 'recharts';
 import { supabase } from '@/lib/supabaseClient';
@@ -93,6 +108,12 @@ const TOGGLE_ACTIVE_CLASSES =
 const TOGGLE_INACTIVE_CLASSES =
   'bg-white text-gray-600 border-gray-300 hover:border-[#56B6E9] hover:text-[#2E86C1]';
 
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const PHOTO_ZOOM_STEP = 0.25;
+const PHOTO_ZOOM_MIN = 0.5;
+const PHOTO_ZOOM_MAX = 4;
+
 // Logo Component
 const WasteXLogo = ({ className = "w-8 h-8" }: { className?: string }) => (
   <div className={`${className} flex items-center justify-center relative`}>
@@ -126,6 +147,9 @@ const WasteXDashboard: React.FC = () => {
   const [notification, setNotification] = useState<{show: boolean; message: string; type: 'success' | 'error' | 'info'}>({
     show: false, message: '', type: 'info'
   });
+  const [photoViewer, setPhotoViewer] = useState<{ url: string; title: string } | null>(null);
+  const [photoViewerLoading, setPhotoViewerLoading] = useState(false);
+  const [photoZoom, setPhotoZoom] = useState<number>(1);
 
   const timePeriodDropdownRef = useRef<HTMLDivElement | null>(null);
   const monthDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -399,6 +423,89 @@ const WasteXDashboard: React.FC = () => {
       day: 'numeric',
       year: 'numeric'
     });
+  };
+
+  const resolvePublicPhotoUrl = async (candidate: string | null | undefined): Promise<string | null> => {
+    if (!candidate || candidate === '#') {
+      return null;
+    }
+
+    const urlPattern = /^https?:\/\//i;
+    if (urlPattern.test(candidate)) {
+      return candidate;
+    }
+
+    const { data, error } = supabase.storage
+      .from('production-photos')
+      .getPublicUrl(candidate);
+
+    if (error) {
+      console.error('Failed to get public URL for production photo', error);
+      return null;
+    }
+
+    return data?.publicUrl ?? null;
+  };
+
+  const adjustPhotoZoom = (delta: number) => {
+    setPhotoZoom((previousZoom) => {
+      const nextZoom = clamp(previousZoom + delta, PHOTO_ZOOM_MIN, PHOTO_ZOOM_MAX);
+      return Number(nextZoom.toFixed(2));
+    });
+  };
+
+  const handleZoomIn = () => adjustPhotoZoom(PHOTO_ZOOM_STEP);
+  const handleZoomOut = () => adjustPhotoZoom(-PHOTO_ZOOM_STEP);
+  const handleResetZoom = () => setPhotoZoom(1);
+
+  const handlePhotoWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!(event.ctrlKey || event.metaKey)) {
+      return;
+    }
+
+    event.preventDefault();
+    adjustPhotoZoom(event.deltaY < 0 ? PHOTO_ZOOM_STEP : -PHOTO_ZOOM_STEP);
+  };
+
+  const handleViewPhoto = async (log: ProductionLog) => {
+    try {
+      setPhotoViewer(null);
+      setPhotoViewerLoading(true);
+
+      const urlPattern = /^https?:\/\//i;
+      let candidate = log.file_url && log.file_url !== '#' ? log.file_url : null;
+
+      if (!candidate && log.processing_status && urlPattern.test(log.processing_status)) {
+        candidate = log.processing_status;
+      }
+
+      if (!candidate && log.file_name && log.file_name.includes('/')) {
+        candidate = log.file_name;
+      }
+
+      const publicUrl = await resolvePublicPhotoUrl(candidate);
+
+      if (!publicUrl) {
+        throw new Error('No photo is associated with this production log.');
+      }
+
+      setPhotoZoom(1);
+      setPhotoViewer({
+        url: publicUrl,
+        title: log.file_name || `${log.client_name} — ${formatDate(log.log_date)}`
+      });
+    } catch (err) {
+      console.error('Unable to display production photo', err);
+      const message = err instanceof Error ? err.message : 'Unable to load production photo.';
+      showNotification(message, 'error');
+    } finally {
+      setPhotoViewerLoading(false);
+    }
+  };
+
+  const closePhotoViewer = () => {
+    setPhotoViewer(null);
+    setPhotoZoom(1);
   };
 
   const formatTonnage = (
@@ -851,6 +958,11 @@ const WasteXDashboard: React.FC = () => {
 
   const pieColors = [BRAND_COLORS.primary, BRAND_COLORS.secondary, BRAND_COLORS.tertiary, BRAND_COLORS.success, BRAND_COLORS.warning];
 
+  const zoomPercentage = Math.round(photoZoom * 100);
+  const zoomAtMin = photoZoom <= PHOTO_ZOOM_MIN + 0.001;
+  const zoomAtMax = photoZoom >= PHOTO_ZOOM_MAX - 0.001;
+  const zoomAtDefault = Math.abs(photoZoom - 1) < 0.001;
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -1284,8 +1396,6 @@ const WasteXDashboard: React.FC = () => {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tonnage</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Price/Ton</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Revenue</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Approval</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
@@ -1310,28 +1420,23 @@ const WasteXDashboard: React.FC = () => {
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600">
                       {formatCurrency(log.total_amount)}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {log.approval_name || 'Pending'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
-                        {log.processing_status}
-                      </span>
-                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <button
-                        onClick={() => window.open(log.file_url, '_blank')}
-                        className="hover:text-gray-900 mr-3"
-                        style={{ color: BRAND_COLORS.primary }}
-                      >
-                        View File
-                      </button>
-                      <button
-                        onClick={() => showNotification(`Viewing details for ${log.file_name}`, 'info')}
-                        className="text-gray-600 hover:text-gray-900"
-                      >
-                        Details
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {(log.file_url && log.file_url !== '#') ||
+                        (log.processing_status && /^https?:\/\//i.test(log.processing_status)) ||
+                        (log.file_name && log.file_name.trim().length > 0) ? (
+                          <button
+                            onClick={() => handleViewPhoto(log)}
+                            className="inline-flex items-center gap-2 px-3 py-1 text-xs font-semibold rounded-lg text-white shadow-sm transition-colors"
+                            style={{ backgroundColor: BRAND_COLORS.primary }}
+                          >
+                            <Eye className="w-4 h-4" />
+                            View Photo
+                          </button>
+                        ) : (
+                          <span className="text-xs text-gray-500">No photo available</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1348,6 +1453,99 @@ const WasteXDashboard: React.FC = () => {
           )}
         </div>
       </main>
+
+      {photoViewerLoading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="flex items-center gap-3 rounded-xl bg-white px-6 py-4 shadow-lg text-gray-700">
+            <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+            <span className="text-sm font-semibold">Loading photo...</span>
+          </div>
+        </div>
+      )}
+
+      {photoViewer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={closePhotoViewer}
+        >
+          <div
+            className="w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+              <div>
+                <h4 className="text-lg font-semibold text-gray-900">Production Photo</h4>
+                {photoViewer.title && (
+                  <p className="text-sm text-gray-500">{photoViewer.title}</p>
+                )}
+              </div>
+              <button
+                onClick={closePhotoViewer}
+                className="rounded-full p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors"
+                aria-label="Close photo viewer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-6 py-3">
+              <p className="text-sm text-gray-600">
+                Zoom level: <span className="font-semibold text-gray-800">{zoomPercentage}%</span>
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleZoomOut}
+                  disabled={zoomAtMin}
+                  className="flex items-center gap-1 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="Zoom out"
+                >
+                  <ZoomOut className="h-4 w-4" />
+                  <span>Zoom out</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetZoom}
+                  disabled={zoomAtDefault}
+                  className="flex items-center gap-1 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="Reset zoom"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  <span>Reset</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleZoomIn}
+                  disabled={zoomAtMax}
+                  className="flex items-center gap-1 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="Zoom in"
+                >
+                  <ZoomIn className="h-4 w-4" />
+                  <span>Zoom in</span>
+                </button>
+              </div>
+            </div>
+            <div className="bg-gray-900">
+              <div
+                className="max-h-[70vh] overflow-auto cursor-grab active:cursor-grabbing"
+                onWheel={handlePhotoWheel}
+              >
+                <div className="flex min-h-[60vh] w-full items-center justify-center p-6">
+                  <img
+                    src={photoViewer.url}
+                    alt={photoViewer.title || 'Production photo'}
+                    className="max-h-[60vh] w-full object-contain transition-transform duration-150 ease-out select-none"
+                    style={{ transform: `scale(${photoZoom})`, transformOrigin: 'center center' }}
+                    draggable={false}
+                  />
+                </div>
+              </div>
+              <div className="border-t border-gray-800 bg-gray-900 px-6 py-3 text-xs text-gray-300">
+                Tip: Use your mouse or trackpad to scroll and pan the image after zooming in for a closer look.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Notification */}
       {notification.show && (
