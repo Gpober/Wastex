@@ -1385,12 +1385,7 @@ const WasteXDashboard: React.FC = () => {
                       {formatCurrency(log.total_amount)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                        {log.processing_status && !/^https?:\/\//i.test(log.processing_status) && (
-                          <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
-                            {log.processing_status}
-                          </span>
-                        )}
+                      <div className="flex items-center gap-2">
                         {(log.file_url && log.file_url !== '#') ||
                         (log.processing_status && /^https?:\/\//i.test(log.processing_status)) ||
                         (log.file_name && log.file_name.trim().length > 0) ? (
@@ -1405,12 +1400,6 @@ const WasteXDashboard: React.FC = () => {
                         ) : (
                           <span className="text-xs text-gray-500">No photo available</span>
                         )}
-                        <button
-                          onClick={() => showNotification(`Viewing details for ${log.file_name}`, 'info')}
-                          className="text-xs font-semibold text-gray-600 hover:text-gray-900"
-                        >
-                          Details
-                        </button>
                       </div>
                     </td>
                   </tr>
