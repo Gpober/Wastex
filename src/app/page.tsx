@@ -300,8 +300,8 @@ export default function FinancialOverviewPage() {
     previous: TonnageStats;
     growth: number;
   } | null;
-  type SummaryView = "payroll" | "ar" | "ap";
-  const [summaryView, setSummaryView] = useState<SummaryView>("payroll");
+  type SummaryView = "tonnage" | "payroll" | "ar" | "ap";
+  const [summaryView, setSummaryView] = useState<SummaryView>("tonnage");
   const [arSummary, setArSummary] = useState<WorkingCapitalSummary | null>(null);
   const [apSummary, setApSummary] = useState<WorkingCapitalSummary | null>(null);
   const [arLoading, setArLoading] = useState(false);
@@ -2540,102 +2540,40 @@ export default function FinancialOverviewPage() {
             </div>
 
             {/* Financial Health Summary */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              <div className="bg-white rounded-lg shadow-sm overflow-hidden">
-                <div className="p-6 border-b border-gray-200">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900">
-                        Tonnage Summary
-                      </h3>
-                      <div className="text-sm text-gray-600 mt-1">
-                        Production volume captured in Wastex logs
-                      </div>
-                    </div>
-                    <span className="hidden sm:inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600">
-                      {timePeriod}
-                    </span>
-                  </div>
-                </div>
-                <div className="p-6">
-                  {tonnageLoading ? (
-                    <div className="text-sm text-gray-500">Loading...</div>
-                  ) : tonnageError ? (
-                    <div className="text-sm text-red-500">{tonnageError}</div>
-                  ) : tonnageSummary ? (
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <div className="text-gray-500">Total Tonnage</div>
-                        <div className="text-lg font-semibold">
-                          {formatTonnage(tonnageSummary.current.totalTonnage)} tons
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500">Total Revenue</div>
-                        <div className="text-lg font-semibold">
-                          {formatCurrency(tonnageSummary.current.totalRevenue)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500">Avg Tons / Day</div>
-                        <div className="text-lg font-semibold">
-                          {formatTonnage(tonnageSummary.current.averageTonnage)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500">Production Days</div>
-                        <div className="text-lg font-semibold">
-                          {tonnageSummary.current.productionDays.toLocaleString()}
-                        </div>
-                      </div>
-                      <div className="col-span-2">
-                        <div className="text-xs text-gray-500">
-                          Change {comparisonLabel}
-                        </div>
-                        <div
-                          className={`mt-1 flex items-center text-sm font-medium ${
-                            tonnageSummary.growth >= 0
-                              ? "text-green-600"
-                              : "text-red-600"
-                          }`}
-                        >
-                          {tonnageSummary.growth >= 0 ? (
-                            <ArrowUpRight className="h-4 w-4 mr-1" />
-                          ) : (
-                            <ArrowDownRight className="h-4 w-4 mr-1" />
-                          )}
-                          {formatPercentage(tonnageSummary.growth)}
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-gray-500">No tonnage data</div>
-                  )}
-                </div>
-              </div>
-
-              {/* Payroll & Working Capital Summary */}
+            <div className="grid grid-cols-1 gap-8">
+              {/* Tonnage, Payroll & Working Capital Summary */}
               <div className="bg-white rounded-lg shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-gray-200">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div>
-                      <h3 className="text-lg font-semibold text-gray-900">
-                        {summaryView === "payroll"
-                          ? "Payroll Summary"
-                          : summaryView === "ar"
-                            ? "A/R Summary"
-                            : "A/P Summary"}
-                      </h3>
+                      <div className="flex items-center gap-3">
+                        <h3 className="text-lg font-semibold text-gray-900">
+                          {summaryView === "tonnage"
+                            ? "Tonnage Summary"
+                            : summaryView === "payroll"
+                              ? "Payroll Summary"
+                              : summaryView === "ar"
+                                ? "A/R Summary"
+                                : "A/P Summary"}
+                        </h3>
+                        {summaryView === "tonnage" && (
+                          <span className="hidden sm:inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600">
+                            {timePeriod}
+                          </span>
+                        )}
+                      </div>
                       <div className="text-sm text-gray-600 mt-1">
-                        {summaryView === "payroll"
-                          ? "Overview of payroll activity"
-                          : summaryView === "ar"
-                            ? "Snapshot of receivables aging"
-                            : "Snapshot of payables aging"}
+                        {summaryView === "tonnage"
+                          ? "Production volume captured in Wastex logs"
+                          : summaryView === "payroll"
+                            ? "Overview of payroll activity"
+                            : summaryView === "ar"
+                              ? "Snapshot of receivables aging"
+                              : "Snapshot of payables aging"}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      {(["payroll", "ar", "ap"] as const).map((key) => (
+                      {(["tonnage", "payroll", "ar", "ap"] as const).map((key) => (
                         <Button
                           key={key}
                           className={`${TOGGLE_BASE_CLASSES} ${
@@ -2645,18 +2583,74 @@ export default function FinancialOverviewPage() {
                           }`}
                           onClick={() => setSummaryView(key)}
                         >
-                          {key === "payroll"
-                            ? "Payroll"
-                            : key === "ar"
-                              ? "A/R"
-                              : "A/P"}
+                          {key === "tonnage"
+                            ? "Tonnage"
+                            : key === "payroll"
+                              ? "Payroll"
+                              : key === "ar"
+                                ? "A/R"
+                                : "A/P"}
                         </Button>
                       ))}
                     </div>
                   </div>
                 </div>
                 <div className="p-6">
-                  {summaryView === "payroll" ? (
+                  {summaryView === "tonnage" ? (
+                    tonnageLoading ? (
+                      <div className="text-sm text-gray-500">Loading...</div>
+                    ) : tonnageError ? (
+                      <div className="text-sm text-red-500">{tonnageError}</div>
+                    ) : tonnageSummary ? (
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <div className="text-gray-500">Total Tonnage</div>
+                          <div className="text-lg font-semibold">
+                            {formatTonnage(tonnageSummary.current.totalTonnage)} tons
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Total Revenue</div>
+                          <div className="text-lg font-semibold">
+                            {formatCurrency(tonnageSummary.current.totalRevenue)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Avg Tons / Day</div>
+                          <div className="text-lg font-semibold">
+                            {formatTonnage(tonnageSummary.current.averageTonnage)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Production Days</div>
+                          <div className="text-lg font-semibold">
+                            {tonnageSummary.current.productionDays.toLocaleString()}
+                          </div>
+                        </div>
+                        <div className="col-span-2">
+                          <div className="text-xs text-gray-500">
+                            Change {comparisonLabel}
+                          </div>
+                          <div
+                            className={`mt-1 flex items-center text-sm font-medium ${
+                              tonnageSummary.growth >= 0
+                                ? "text-green-600"
+                                : "text-red-600"
+                            }`}
+                          >
+                            {tonnageSummary.growth >= 0 ? (
+                              <ArrowUpRight className="h-4 w-4 mr-1" />
+                            ) : (
+                              <ArrowDownRight className="h-4 w-4 mr-1" />
+                            )}
+                            {formatPercentage(tonnageSummary.growth)}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-500">No tonnage data</div>
+                    )
+                  ) : summaryView === "payroll" ? (
                     payrollLoading ? (
                       <div className="text-sm text-gray-500">Loading...</div>
                     ) : payrollError ? (
@@ -2786,6 +2780,10 @@ export default function FinancialOverviewPage() {
                         No {workingCapitalState.labels.view} data
                       </div>
                     )
+                  ) : summaryView === "ar" ? (
+                    <div className="text-sm text-gray-500">No A/R data</div>
+                  ) : summaryView === "ap" ? (
+                    <div className="text-sm text-gray-500">No A/P data</div>
                   ) : null}
                 </div>
               </div>
