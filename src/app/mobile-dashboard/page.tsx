@@ -375,6 +375,19 @@ const sortProductionEntriesByDate = (entries: ProductionEntry[]) =>
       normalizeDate(parseDateValue(a.logDate)).getTime(),
   );
 
+const extractRemoteId = (entryId: string): string | number | null => {
+  if (!entryId.startsWith("remote-")) {
+    return null;
+  }
+
+  const rawId = entryId.replace("remote-", "");
+  if (!rawId) {
+    return null;
+  }
+
+  return /^\d+$/.test(rawId) ? Number(rawId) : rawId;
+};
+
 const PRODUCTION_MONTH_OPTIONS = [
   { value: 0, label: "January" },
   { value: 1, label: "February" },
@@ -1166,10 +1179,8 @@ export default function EnhancedMobileDashboard() {
             syncOfflineEntries();
           }, 500);
         } else {
-          const remoteId = editingEntry.id.startsWith("remote-")
-            ? Number(editingEntry.id.replace("remote-", ""))
-            : null;
-          if (remoteId === null || Number.isNaN(remoteId)) {
+          const remoteId = extractRemoteId(editingEntry.id);
+          if (remoteId === null) {
             throw new Error("Invalid remote production entry identifier");
           }
 
@@ -1446,8 +1457,8 @@ export default function EnhancedMobileDashboard() {
 
       try {
         if (!entry.localOnly && entry.id.startsWith("remote-")) {
-          const remoteId = Number(entry.id.replace("remote-", ""));
-          if (!Number.isNaN(remoteId)) {
+          const remoteId = extractRemoteId(entry.id);
+          if (remoteId !== null) {
             const { error } = await supabase
               .from("wastex_production_logs")
               .delete()
