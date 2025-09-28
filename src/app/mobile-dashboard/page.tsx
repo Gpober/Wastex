@@ -1444,10 +1444,14 @@ export default function EnhancedMobileDashboard() {
 
       closeSwipeActions();
       let removedEntry: ProductionEntry | null = null;
+      let removedFileName: string | null = null;
+      let removedPhotoHash: string | null = null;
       updateProductionEntries((prev) => {
         const next = prev.filter((item) => {
           if (item.id === entry.id) {
             removedEntry = item;
+            removedFileName = item.fileName ?? null;
+            removedPhotoHash = item.photoHash ?? null;
             return false;
           }
           return true;
@@ -1464,6 +1468,22 @@ export default function EnhancedMobileDashboard() {
               .delete()
               .eq("id", remoteId);
             if (error) throw error;
+
+            if (removedPhotoHash && removedFileName) {
+              const { data: relatedEntries, error: selectError } = await supabase
+                .from("wastex_production_logs")
+                .select("id")
+                .eq("photo_hash", removedPhotoHash)
+                .limit(1);
+              if (selectError) throw selectError;
+
+              if (!relatedEntries || relatedEntries.length === 0) {
+                const { error: storageError } = await supabase.storage
+                  .from("production-photos")
+                  .remove([removedFileName]);
+                if (storageError) throw storageError;
+              }
+            }
           }
         }
         setProductionNotice("Production log deleted.");
