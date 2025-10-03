@@ -14,10 +14,16 @@ import {
   ChevronLeft,
   ChevronRight,
   TrendingUp,
+  TrendingDown,
   Award,
   AlertTriangle,
   AlertCircle,
   CheckCircle,
+  CheckCircle2,
+  Download,
+  RefreshCcw,
+  RefreshCw,
+  Sparkles,
   Target,
   Mic,
   Bot,
@@ -27,11 +33,21 @@ import {
   Camera,
   Image as ImageIcon,
   Upload,
-  RefreshCcw,
   Pencil,
   Trash2,
   type LucideIcon,
 } from "lucide-react";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
+import DateRangePicker from "@/components/DateRangePicker";
+import CustomerMultiSelect from "@/components/CustomerMultiSelect";
+import { formatDate } from "@/lib/utils";
 
 import {
   endOfMonth,
@@ -42,6 +58,7 @@ import {
   getQuarter,
   isSameDay,
   isWithinInterval,
+  parse,
   parseISO,
   startOfMonth,
   startOfQuarter,
@@ -118,6 +135,48 @@ interface APTransaction {
   daysOutstanding: number;
   vendor: string;
   memo?: string | null;
+}
+
+interface ComparativeKPIs {
+  revenue: number;
+  cogs: number;
+  grossProfit: number;
+  opEx: number;
+  netIncome: number;
+}
+
+type ComparativeInsightType = "positive" | "negative" | "neutral" | "warning";
+
+interface ComparativeInsight {
+  type: ComparativeInsightType;
+  title: string;
+  description: string;
+  impact: "high" | "medium" | "low";
+}
+
+interface ComparativeVarianceRow {
+  account: string;
+  type: string;
+  a: number;
+  b: number;
+  var: number;
+  varPct: number | null;
+}
+
+interface ComparativeVarianceSections {
+  income: ComparativeVarianceRow[];
+  cogs: ComparativeVarianceRow[];
+  expenses: ComparativeVarianceRow[];
+}
+
+interface ComparativeWeeklyPoint {
+  week: string;
+  revenueA: number;
+  revenueB: number;
+  netIncomeA: number;
+  netIncomeB: number;
+  marginA: number;
+  marginB: number;
 }
 
 interface JournalRow {
@@ -429,7 +488,13 @@ const insights: Insight[] = [
 export default function EnhancedMobileDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reportType, setReportType] = useState<
-    "pl" | "cf" | "ar" | "ap" | "payroll" | "production"
+    | "pl"
+    | "cf"
+    | "ar"
+    | "ap"
+    | "payroll"
+    | "production"
+    | "comparative"
   >("pl");
   const [reportPeriod, setReportPeriod] = useState<
     "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly"
@@ -466,6 +531,477 @@ export default function EnhancedMobileDashboard() {
   const [payrollTotals, setPayrollTotals] = useState<number>(0);
   const [employeeBreakdown, setEmployeeBreakdown] = useState<Record<string, { total: number; payments: Transaction[] }>>({});
   const [employeeTotals, setEmployeeTotals] = useState<Category[]>([]);
+
+  // Comparative analysis states
+  const [comparativeStartA, setComparativeStartA] = useState("");
+  const [comparativeEndA, setComparativeEndA] = useState("");
+  const [comparativeStartB, setComparativeStartB] = useState("");
+  const [comparativeEndB, setComparativeEndB] = useState("");
+  const [comparativeSelectedCustomers, setComparativeSelectedCustomers] = useState<Set<string>>(
+    () => new Set(["All Customers"]),
+  );
+  const [comparativeCustomers, setComparativeCustomers] = useState<string[]>([]);
+  const [comparativeDataA, setComparativeDataA] = useState<ComparativeKPIs | null>(null);
+  const [comparativeDataB, setComparativeDataB] = useState<ComparativeKPIs | null>(null);
+  const [comparativeVarianceRows, setComparativeVarianceRows] = useState<ComparativeVarianceSections>({
+    income: [],
+    cogs: [],
+    expenses: [],
+  });
+  const [comparativeWeeklyData, setComparativeWeeklyData] = useState<ComparativeWeeklyPoint[]>([]);
+  const [comparativeLoading, setComparativeLoading] = useState(false);
+  const [comparativeError, setComparativeError] = useState<string | null>(null);
+  const [comparativeAllLinesA, setComparativeAllLinesA] = useState<JournalRow[]>([]);
+  const [comparativeAllLinesB, setComparativeAllLinesB] = useState<JournalRow[]>([]);
+  const [showComparativeModal, setShowComparativeModal] = useState(false);
+  const [comparativeModalTitle, setComparativeModalTitle] = useState("");
+  const [comparativeModalTransactions, setComparativeModalTransactions] = useState<(JournalRow & { set: "A" | "B" })[]>([]);
+  const [comparativeInsights, setComparativeInsights] = useState<ComparativeInsight[]>([]);
+  const [comparativeLabelA, setComparativeLabelA] = useState("A");
+  const [comparativeLabelB, setComparativeLabelB] = useState("B");
+
+  const comparativeCustomerSummary = useMemo(() => {
+    const customers = Array.from(comparativeSelectedCustomers);
+
+    if (customers.length === 0 || customers.includes("All Customers")) {
+      return "All Customers";
+    }
+
+    if (customers.length === 1) {
+      return customers[0];
+    }
+
+    if (customers.length === 2) {
+      return `${customers[0]} and ${customers[1]}`;
+    }
+
+    return `${customers[0]}, ${customers[1]}, +${customers.length - 2} more`;
+  }, [comparativeSelectedCustomers]);
+
+  const fetchComparativeCustomers = useCallback(async () => {
+    const { data } = await supabase.from("journal_entry_lines").select("customer");
+    if (data) {
+      const unique = Array.from(
+        new Set(
+          (data as { customer: string | null }[])
+            .map((entry) => entry.customer?.trim())
+            .filter((customer): customer is string => Boolean(customer && customer.length)),
+        ),
+      );
+      setComparativeCustomers(["All Customers", ...unique]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchComparativeCustomers();
+  }, [fetchComparativeCustomers]);
+
+  useEffect(() => {
+    const formatPeriodLabel = (start: string, end: string) => {
+      if (!start || !end) return "";
+      const startDate = parse(start, "yyyy-MM-dd", new Date());
+      const endDate = parse(end, "yyyy-MM-dd", new Date());
+      if (start === end) {
+        return startDate.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        });
+      }
+      return `${startDate.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      })} - ${endDate.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })}`;
+    };
+
+    setComparativeLabelA(formatPeriodLabel(comparativeStartA, comparativeEndA) || "Period A");
+    setComparativeLabelB(formatPeriodLabel(comparativeStartB, comparativeEndB) || "Period B");
+  }, [comparativeStartA, comparativeEndA, comparativeStartB, comparativeEndB]);
+
+  const fetchComparativeLines = async (
+    start: string,
+    end: string,
+    customersFilter?: string[],
+  ) => {
+    let query = supabase
+      .from("journal_entry_lines")
+      .select("account, account_type, debit, credit, class, date, customer")
+      .gte("date", start)
+      .lte("date", end);
+
+    if (customersFilter && customersFilter.length > 0 && !customersFilter.includes("All Customers")) {
+      query = query.in("customer", customersFilter);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data as JournalRow[]) || [];
+  };
+
+  const computeComparativeKPIs = (lines: JournalRow[]): ComparativeKPIs => {
+    let revenue = 0;
+    let cogs = 0;
+    let opEx = 0;
+
+    lines.forEach((line) => {
+      const amount = (Number(line.credit) || 0) - (Number(line.debit) || 0);
+      const type = (line.account_type || "").toLowerCase();
+
+      if (type.includes("income") || type.includes("revenue")) {
+        revenue += amount;
+      } else if (type.includes("cost of goods sold")) {
+        cogs += amount;
+      } else if (type.includes("expense")) {
+        opEx += amount;
+      }
+    });
+
+    const grossProfit = revenue + cogs;
+    const netIncome = grossProfit + opEx;
+
+    return { revenue, cogs, grossProfit, opEx, netIncome };
+  };
+
+  const generateComparativeInsights = (
+    dataA: ComparativeKPIs,
+    dataB: ComparativeKPIs,
+    labelA: string,
+    labelB: string,
+  ): ComparativeInsight[] => {
+    const insightList: ComparativeInsight[] = [];
+
+    const revenueDifference = dataA.revenue - dataB.revenue;
+    if (Math.abs(revenueDifference) > 10000) {
+      const winner = revenueDifference > 0 ? labelA : labelB;
+      const loser = revenueDifference > 0 ? labelB : labelA;
+      insightList.push({
+        type: revenueDifference > 0 ? "positive" : "negative",
+        title: `${winner} Outperforming in Revenue`,
+        description: `${winner} generated ${formatCurrency(Math.abs(revenueDifference))} more revenue than ${loser}. This represents a significant performance gap that should be investigated.`,
+        impact:
+          Math.abs(revenueDifference) > 100000
+            ? "high"
+            : Math.abs(revenueDifference) > 50000
+            ? "medium"
+            : "low",
+      });
+    }
+
+    const profitDifference = dataA.netIncome - dataB.netIncome;
+    if (Math.abs(profitDifference) > 5000) {
+      const winner = profitDifference > 0 ? labelA : labelB;
+      const loser = profitDifference > 0 ? labelB : labelA;
+      insightList.push({
+        type: profitDifference > 0 ? "positive" : "negative",
+        title: `${winner} More Profitable`,
+        description: `${winner} made ${formatCurrency(Math.abs(profitDifference))} more profit than ${loser}. This shows ${winner} is operating more efficiently or has better cost control.`,
+        impact:
+          Math.abs(profitDifference) > 50000
+            ? "high"
+            : Math.abs(profitDifference) > 25000
+            ? "medium"
+            : "low",
+      });
+    }
+
+    const expenseDifference = Math.abs(dataA.opEx) - Math.abs(dataB.opEx);
+    if (Math.abs(expenseDifference) > 5000) {
+      const moreEfficient = expenseDifference < 0 ? labelA : labelB;
+      const lessEfficient = expenseDifference < 0 ? labelB : labelA;
+      insightList.push({
+        type: "neutral",
+        title: `${moreEfficient} Operating More Efficiently`,
+        description: `${moreEfficient} spent ${formatCurrency(Math.abs(expenseDifference))} less on operating expenses than ${lessEfficient}. This cost advantage contributes to better profitability.`,
+        impact:
+          Math.abs(expenseDifference) > 25000
+            ? "high"
+            : Math.abs(expenseDifference) > 15000
+            ? "medium"
+            : "low",
+      });
+    }
+
+    const grossProfitDifference = dataA.grossProfit - dataB.grossProfit;
+    if (Math.abs(grossProfitDifference) > 10000) {
+      const winner = grossProfitDifference > 0 ? labelA : labelB;
+      const loser = grossProfitDifference > 0 ? labelB : labelA;
+      insightList.push({
+        type: grossProfitDifference > 0 ? "positive" : "warning",
+        title: `${winner} Generating More Gross Profit`,
+        description: `${winner} achieved ${formatCurrency(Math.abs(grossProfitDifference))} more gross profit than ${loser}. This indicates better pricing, lower costs, or higher sales volume.`,
+        impact:
+          Math.abs(grossProfitDifference) > 75000
+            ? "high"
+            : Math.abs(grossProfitDifference) > 35000
+            ? "medium"
+            : "low",
+      });
+    }
+
+    return insightList.slice(0, 3);
+  };
+
+  const aggregateComparativeWeekly = (
+    linesA: JournalRow[],
+    linesB: JournalRow[],
+  ): ComparativeWeeklyPoint[] => {
+    const weeks = new Map<string, { A: ComparativeKPIs; B: ComparativeKPIs }>();
+
+    const processLines = (lines: JournalRow[], key: "A" | "B") => {
+      lines.forEach((line) => {
+        const date = parse(line.date, "yyyy-MM-dd", new Date());
+        const weekStart = new Date(date);
+        weekStart.setDate(date.getDate() - date.getDay());
+        const weekKey = weekStart.toISOString().split("T")[0];
+
+        if (!weeks.has(weekKey)) {
+          weeks.set(weekKey, {
+            A: { revenue: 0, cogs: 0, grossProfit: 0, opEx: 0, netIncome: 0 },
+            B: { revenue: 0, cogs: 0, grossProfit: 0, opEx: 0, netIncome: 0 },
+          });
+        }
+
+        const week = weeks.get(weekKey)!;
+        const amount = (Number(line.credit) || 0) - (Number(line.debit) || 0);
+        const type = (line.account_type || "").toLowerCase();
+
+        if (type.includes("income") || type.includes("revenue")) {
+          week[key].revenue += amount;
+        } else if (type.includes("cost of goods sold")) {
+          week[key].cogs += amount;
+        } else if (type.includes("expense")) {
+          week[key].opEx += amount;
+        }
+      });
+    };
+
+    processLines(linesA, "A");
+    processLines(linesB, "B");
+
+    return Array.from(weeks.entries())
+      .map(([week, data]) => {
+        data.A.grossProfit = data.A.revenue + data.A.cogs;
+        data.A.netIncome = data.A.grossProfit + data.A.opEx;
+        data.B.grossProfit = data.B.revenue + data.B.cogs;
+        data.B.netIncome = data.B.grossProfit + data.B.opEx;
+
+        return {
+          week,
+          revenueA: data.A.revenue,
+          revenueB: data.B.revenue,
+          netIncomeA: data.A.netIncome,
+          netIncomeB: data.B.netIncome,
+          marginA: data.A.revenue ? (data.A.grossProfit / data.A.revenue) * 100 : 0,
+          marginB: data.B.revenue ? (data.B.grossProfit / data.B.revenue) * 100 : 0,
+        };
+      })
+      .sort((a, b) => a.week.localeCompare(b.week));
+  };
+
+  const computeComparativeVarianceTable = (
+    linesA: JournalRow[],
+    linesB: JournalRow[],
+  ): ComparativeVarianceSections => {
+    const map = new Map<string, { account: string; type: string; a: number; b: number }>();
+
+    const addLine = (line: JournalRow, field: "a" | "b") => {
+      const amount = (Number(line.credit) || 0) - (Number(line.debit) || 0);
+      const type = (line.account_type || "").toLowerCase();
+      if (
+        !(
+          type.includes("income") ||
+          type.includes("revenue") ||
+          type.includes("cost of goods sold") ||
+          type.includes("expense")
+        )
+      ) {
+        return;
+      }
+
+      const key = line.account;
+      const existing = map.get(key) || {
+        account: key,
+        type,
+        a: 0,
+        b: 0,
+      };
+      existing[field] += amount;
+      existing.type = type;
+      map.set(key, existing);
+    };
+
+    linesA.forEach((line) => addLine(line, "a"));
+    linesB.forEach((line) => addLine(line, "b"));
+
+    const rows = Array.from(map.values()).map<ComparativeVarianceRow>((row) => ({
+      ...row,
+      var: row.a - row.b,
+      varPct: row.b ? (row.a - row.b) / Math.abs(row.b) : null,
+    }));
+
+    rows.sort((a, b) => Math.abs(b.var) - Math.abs(a.var));
+
+    return {
+      income: rows.filter((row) => row.type.includes("income") || row.type.includes("revenue")),
+      cogs: rows.filter((row) => row.type.includes("cost of goods sold")),
+      expenses: rows.filter(
+        (row) => row.type.includes("expense") && !row.type.includes("cost of goods sold"),
+      ),
+    };
+  };
+
+  const comparativeSectionTotals = (rows: ComparativeVarianceRow[]) => {
+    const a = rows.reduce((sum, row) => sum + row.a, 0);
+    const b = rows.reduce((sum, row) => sum + row.b, 0);
+    const variance = a - b;
+    const variancePct = b ? variance / Math.abs(b) : null;
+    return { a, b, var: variance, varPct: variancePct };
+  };
+
+  const fetchComparativeData = async () => {
+    if (
+      !comparativeStartA ||
+      !comparativeEndA ||
+      !comparativeStartB ||
+      !comparativeEndB ||
+      comparativeSelectedCustomers.size === 0
+    ) {
+      return;
+    }
+
+    setComparativeLoading(true);
+    setComparativeError(null);
+
+    try {
+      const customerFilter = Array.from(comparativeSelectedCustomers);
+      const [linesA, linesB] = await Promise.all([
+        fetchComparativeLines(comparativeStartA, comparativeEndA, customerFilter),
+        fetchComparativeLines(comparativeStartB, comparativeEndB, customerFilter),
+      ]);
+
+      const kpiA = computeComparativeKPIs(linesA);
+      const kpiB = computeComparativeKPIs(linesB);
+      setComparativeDataA(kpiA);
+      setComparativeDataB(kpiB);
+      const variance = computeComparativeVarianceTable(linesA, linesB);
+      setComparativeVarianceRows(variance);
+      setComparativeWeeklyData(aggregateComparativeWeekly(linesA, linesB));
+      setComparativeAllLinesA(linesA);
+      setComparativeAllLinesB(linesB);
+      setComparativeInsights(
+        generateComparativeInsights(kpiA, kpiB, comparativeLabelA, comparativeLabelB),
+      );
+    } catch (error: any) {
+      setComparativeError(error.message);
+    } finally {
+      setComparativeLoading(false);
+    }
+  };
+
+  const showComparativeTransactionDetails = (account: string) => {
+    const combined = [
+      ...comparativeAllLinesA.map((line) => ({ ...line, set: "A" as const })),
+      ...comparativeAllLinesB.map((line) => ({ ...line, set: "B" as const })),
+    ].filter((line) => line.account === account);
+    setComparativeModalTitle(account);
+    setComparativeModalTransactions(combined);
+    setShowComparativeModal(true);
+  };
+
+  const handleComparativeExport = () => {
+    const header = `Account,${comparativeLabelA},${comparativeLabelB},Var $,Var %\n`;
+    const sections = [
+      { name: "INCOME", rows: comparativeVarianceRows.income },
+      { name: "COGS", rows: comparativeVarianceRows.cogs },
+      { name: "EXPENSES", rows: comparativeVarianceRows.expenses },
+    ];
+    const lines: string[] = [];
+
+    sections.forEach((section) => {
+      const totals = comparativeSectionTotals(section.rows);
+      lines.push(
+        [
+          section.name,
+          totals.a.toFixed(2),
+          totals.b.toFixed(2),
+          totals.var.toFixed(2),
+          totals.varPct !== null ? (totals.varPct * 100).toFixed(2) + "%" : "",
+        ].join(","),
+      );
+
+      section.rows.forEach((row) => {
+        lines.push(
+          [
+            row.account,
+            row.a.toFixed(2),
+            row.b.toFixed(2),
+            row.var.toFixed(2),
+            row.varPct !== null ? (row.varPct * 100).toFixed(2) + "%" : "",
+          ].join(","),
+        );
+      });
+    });
+
+    const incomeTotals = comparativeSectionTotals(comparativeVarianceRows.income);
+    const cogsTotals = comparativeSectionTotals(comparativeVarianceRows.cogs);
+    const grossProfitA = incomeTotals.a + cogsTotals.a;
+    const grossProfitB = incomeTotals.b + cogsTotals.b;
+    const grossProfitVar = grossProfitA - grossProfitB;
+    const grossProfitVarPct = grossProfitB ? grossProfitVar / Math.abs(grossProfitB) : null;
+    lines.push(
+      [
+        "GROSS PROFIT",
+        grossProfitA.toFixed(2),
+        grossProfitB.toFixed(2),
+        grossProfitVar.toFixed(2),
+        grossProfitVarPct !== null ? (grossProfitVarPct * 100).toFixed(2) + "%" : "",
+      ].join(","),
+    );
+
+    const csv = header + lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "comparative-analysis.csv";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const getComparativeInsightIcon = (type: ComparativeInsightType) => {
+    switch (type) {
+      case "positive":
+        return <CheckCircle2 className="w-5 h-5 text-green-500" />;
+      case "negative":
+        return <AlertCircle className="w-5 h-5 text-red-500" />;
+      case "warning":
+        return <AlertCircle className="w-5 h-5 text-yellow-500" />;
+      default:
+        return <Sparkles className="w-5 h-5 text-blue-500" />;
+    }
+  };
+
+  const formatComparativePercentage = (value: number) => {
+    const abs = Math.abs(value);
+    const sign = value >= 0 ? "+" : "";
+    return `${sign}${abs.toFixed(1)}%`;
+  };
+
+  const getComparativeChangeColor = (value: number) => {
+    if (value > 0) return "text-green-600";
+    if (value < 0) return "text-red-600";
+    return "text-gray-600";
+  };
+
+  const getComparativeChangeIcon = (value: number) => {
+    if (value > 0) return <TrendingUp className="w-4 h-4" />;
+    if (value < 0) return <TrendingDown className="w-4 h-4" />;
+    return null;
+  };
 
   // AI CFO States
   const [isListening, setIsListening] = useState(false);
@@ -1863,6 +2399,10 @@ export default function EnhancedMobileDashboard() {
         setProperties([]);
         return;
       }
+      if (reportType === "comparative") {
+        setProperties([]);
+        return;
+      }
       if (reportType === "ap") {
         const { data } = await supabase
           .from("ap_aging")
@@ -2038,6 +2578,13 @@ export default function EnhancedMobileDashboard() {
     };
     load();
   }, [reportType, reportPeriod, month, year, customStart, customEnd, getDateRange]);
+
+  useEffect(() => {
+    if (reportType === "comparative") {
+      setSelectedProperty(null);
+      setView("report");
+    }
+  }, [reportType]);
 
   const revenueKing = useMemo(() => {
     if (reportType !== "pl" || !properties.length) return null;
@@ -2378,6 +2925,10 @@ export default function EnhancedMobileDashboard() {
 
   const handlePropertySelect = async (name: string | null) => {
     setSelectedProperty(name);
+    if (reportType === "comparative") {
+      setView("report");
+      return;
+    }
     if (reportType === "pl") await loadPL(name);
     else if (reportType === "cf") await loadCF(name);
     else if (reportType === "payroll") await loadPayroll(name);
@@ -3074,6 +3625,7 @@ export default function EnhancedMobileDashboard() {
               <option value="cf">Cash Flow Statement</option>
               <option value="payroll">Payroll</option>
               <option value="production">Production</option>
+              <option value="comparative">Comparative Analysis</option>
               <option value="ar">A/R Aging Report</option>
               <option value="ap">A/P Aging Report</option>
             </select>
@@ -3157,6 +3709,113 @@ export default function EnhancedMobileDashboard() {
               <p style={{ fontSize: '12px', marginTop: '8px', color: '#64748b' }}>
                 Select any day to view that week&apos;s Monday through Sunday production.
               </p>
+            </div>
+          )}
+          {reportType === "comparative" && (
+            <div style={{ display: 'grid', gap: '16px', marginTop: '8px' }}>
+              <div>
+                <CustomerMultiSelect
+                  options={comparativeCustomers}
+                  selected={comparativeSelectedCustomers}
+                  onChange={(next) => setComparativeSelectedCustomers(new Set(next))}
+                  accentColor={BRAND_COLORS.primary}
+                  label="Customer"
+                />
+              </div>
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    marginBottom: '8px',
+                    fontWeight: '600',
+                    color: BRAND_COLORS.accent,
+                  }}
+                >
+                  Period A
+                </label>
+                <DateRangePicker
+                  startDate={comparativeStartA}
+                  endDate={comparativeEndA}
+                  onChange={(start, end) => {
+                    setComparativeStartA(start);
+                    setComparativeEndA(end);
+                  }}
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    marginBottom: '8px',
+                    fontWeight: '600',
+                    color: BRAND_COLORS.accent,
+                  }}
+                >
+                  Period B
+                </label>
+                <DateRangePicker
+                  startDate={comparativeStartB}
+                  endDate={comparativeEndB}
+                  onChange={(start, end) => {
+                    setComparativeStartB(start);
+                    setComparativeEndB(end);
+                  }}
+                  className="w-full"
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    fetchComparativeData();
+                  }}
+                  disabled={comparativeLoading}
+                  style={{
+                    flex: '1 1 140px',
+                    display: 'inline-flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: BRAND_COLORS.primary,
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    fontWeight: 600,
+                    cursor: comparativeLoading ? 'not-allowed' : 'pointer',
+                    opacity: comparativeLoading ? 0.7 : 1,
+                  }}
+                >
+                  <RefreshCw
+                    size={16}
+                    className={comparativeLoading ? 'animate-spin' : ''}
+                  />
+                  {comparativeLoading ? 'Analyzing...' : 'Analyze'}
+                </button>
+                <button
+                  onClick={() => {
+                    handleComparativeExport();
+                    setMenuOpen(false);
+                  }}
+                  style={{
+                    flex: '1 1 140px',
+                    display: 'inline-flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: '#475569',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Download size={16} /> Export
+                </button>
+              </div>
             </div>
           )}
           {productionPeriod === "Monthly" && (
@@ -4738,7 +5397,482 @@ export default function EnhancedMobileDashboard() {
             </p>
           </div>
 
-          {reportType === "pl" ? (
+          {reportType === "comparative" ? (
+            <div className="space-y-8">
+              <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+                <h1 className="text-3xl font-bold text-gray-900 mb-4">Comparative Analysis</h1>
+                <p className="text-sm text-gray-600 leading-relaxed">
+                  Review performance for
+                  <span className="font-semibold text-gray-900"> {comparativeCustomerSummary} </span>
+                  across
+                  <span className="font-semibold text-gray-900"> {comparativeLabelA || "Period A"} </span>
+                  and
+                  <span className="font-semibold text-gray-900"> {comparativeLabelB || "Period B"}</span>.
+                </p>
+
+                <div className="flex flex-wrap gap-3 mt-6">
+                  {[{
+                    label: "Customer",
+                    value: comparativeCustomerSummary,
+                  },
+                  {
+                    label: "Period A",
+                    value: comparativeLabelA || "Period A",
+                  },
+                  {
+                    label: "Period B",
+                    value: comparativeLabelB || "Period B",
+                  }].map((item) => (
+                    <div
+                      key={item.label}
+                      className="px-4 py-3 bg-gray-100 rounded-xl border border-gray-200 min-w-[140px]"
+                    >
+                      <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">{item.label}</p>
+                      <p className="text-sm font-medium text-gray-900 leading-tight">
+                        {item.value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <p className="mt-6 text-xs text-gray-500">
+                  Adjust filters, rerun the analysis, or export results from the hamburger menu.
+                </p>
+
+                {comparativeLoading && (
+                  <div className="mt-4 inline-flex items-center gap-2 text-sm text-blue-600">
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    Analyzing latest data...
+                  </div>
+                )}
+
+                {comparativeError && (
+                  <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-red-600 text-sm">{comparativeError}</p>
+                  </div>
+                )}
+              </div>
+
+              {comparativeInsights.length > 0 && (
+                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl p-6 border border-blue-100">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Sparkles className="w-6 h-6 text-blue-600" />
+                    <h2 className="text-xl font-semibold text-gray-900">AI Analysis</h2>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3">
+                    {comparativeInsights.map((insight, idx) => (
+                      <div key={idx} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+                        <div className="flex items-start gap-3">
+                          {getComparativeInsightIcon(insight.type)}
+                          <div className="flex-1">
+                            <h3 className="font-medium text-gray-900 mb-1">{insight.title}</h3>
+                            <p className="text-sm text-gray-600 leading-relaxed">{insight.description}</p>
+                            <span
+                              className={`inline-block mt-2 px-2 py-1 rounded-full text-xs font-medium ${
+                                insight.impact === "high"
+                                  ? "bg-red-100 text-red-700"
+                                  : insight.impact === "medium"
+                                  ? "bg-yellow-100 text-yellow-700"
+                                  : "bg-green-100 text-green-700"
+                              }`}
+                            >
+                              {insight.impact.toUpperCase()} IMPACT
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {comparativeDataA && comparativeDataB && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+                  {[
+                    { key: 'revenue', label: 'Revenue', valueA: comparativeDataA.revenue, valueB: comparativeDataB.revenue },
+                    { key: 'grossProfit', label: 'Gross Profit', valueA: comparativeDataA.grossProfit, valueB: comparativeDataB.grossProfit },
+                    { key: 'opEx', label: 'Operating Expenses', valueA: Math.abs(comparativeDataA.opEx), valueB: Math.abs(comparativeDataB.opEx) },
+                    { key: 'netIncome', label: 'Net Income', valueA: comparativeDataA.netIncome, valueB: comparativeDataB.netIncome },
+                    {
+                      key: 'margin',
+                      label: 'Gross Margin',
+                      valueA: comparativeDataA.revenue ? (comparativeDataA.grossProfit / comparativeDataA.revenue) * 100 : 0,
+                      valueB: comparativeDataB.revenue ? (comparativeDataB.grossProfit / comparativeDataB.revenue) * 100 : 0,
+                      isPercentage: true,
+                    },
+                  ].map((metric) => {
+                    const change = metric.valueA - metric.valueB;
+                    const changePercent = metric.valueB !== 0 ? (change / Math.abs(metric.valueB)) * 100 : 0;
+
+                    return (
+                      <div key={metric.key} className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+                        <div className="flex items-center justify-between mb-4">
+                          <h3 className="text-sm font-medium text-gray-600">{metric.label}</h3>
+                          <div className={`flex items-center gap-1 ${getComparativeChangeColor(change)}`}>
+                            {getComparativeChangeIcon(change)}
+                            <span className="text-xs font-medium">
+                              {formatComparativePercentage(changePercent)}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3">
+                          <div>
+                            <p className="text-xs text-gray-500 mb-1">{comparativeLabelA}</p>
+                            <p className="text-xl font-bold text-gray-900">
+                              {metric.isPercentage ? `${metric.valueA.toFixed(1)}%` : formatCurrency(metric.valueA)}
+                            </p>
+                          </div>
+
+                          <div>
+                            <p className="text-xs text-gray-500 mb-1">{comparativeLabelB}</p>
+                            <p className="text-sm text-gray-600">
+                              {metric.isPercentage ? `${metric.valueB.toFixed(1)}%` : formatCurrency(metric.valueB)}
+                            </p>
+                          </div>
+
+                          <div className="pt-2 border-t border-gray-100">
+                            <p className="text-xs text-gray-500 mb-1">Variance</p>
+                            <p className={`text-sm font-medium ${getComparativeChangeColor(change)}`}>
+                              {metric.isPercentage
+                                ? `${change >= 0 ? '+' : ''}${change.toFixed(1)}pts`
+                                : `${change >= 0 ? '+' : ''}${formatCurrency(change)}`}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {comparativeWeeklyData.length > 0 && (
+                <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+                  <h2 className="text-xl font-semibold text-gray-900 mb-6">Weekly Performance Trends</h2>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div>
+                      <h3 className="text-lg font-medium text-gray-700 mb-4">Revenue Comparison</h3>
+                      <div className="h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={comparativeWeeklyData} margin={{ left: 20, right: 20, top: 20, bottom: 20 }}>
+                            <XAxis
+                              dataKey="week"
+                              tickFormatter={(value) =>
+                                parse(value as string, "yyyy-MM-dd", new Date()).toLocaleDateString("en-US", {
+                                  month: "short",
+                                  day: "numeric",
+                                })
+                              }
+                              stroke="#6B7280"
+                              fontSize={12}
+                            />
+                            <YAxis
+                              tickFormatter={(v) => formatCurrency(v)}
+                              stroke="#6B7280"
+                              fontSize={12}
+                            />
+                            <Tooltip
+                              formatter={(value) => formatCurrency(Number(value))}
+                              labelFormatter={(value) =>
+                                `Week of ${parse(value as string, "yyyy-MM-dd", new Date()).toLocaleDateString()}`
+                              }
+                              contentStyle={{
+                                backgroundColor: "white",
+                                border: "1px solid #E5E7EB",
+                                borderRadius: "8px",
+                              }}
+                            />
+                            <Line
+                              type="monotone"
+                              dataKey="revenueA"
+                              stroke={BRAND_COLORS.primary}
+                              strokeWidth={3}
+                              dot={{ fill: BRAND_COLORS.primary, strokeWidth: 2, r: 4 }}
+                              name={comparativeLabelA}
+                            />
+                            <Line
+                              type="monotone"
+                              dataKey="revenueB"
+                              stroke={BRAND_COLORS.gray[600] || "#4B5563"}
+                              strokeWidth={2}
+                              strokeDasharray="5 5"
+                              dot={{ fill: BRAND_COLORS.gray[600] || "#4B5563", strokeWidth: 2, r: 3 }}
+                              name={comparativeLabelB}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="text-lg font-medium text-gray-700 mb-4">Net Income Comparison</h3>
+                      <div className="h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={comparativeWeeklyData} margin={{ left: 20, right: 20, top: 20, bottom: 20 }}>
+                            <XAxis
+                              dataKey="week"
+                              tickFormatter={(value) =>
+                                parse(value as string, "yyyy-MM-dd", new Date()).toLocaleDateString("en-US", {
+                                  month: "short",
+                                  day: "numeric",
+                                })
+                              }
+                              stroke="#6B7280"
+                              fontSize={12}
+                            />
+                            <YAxis
+                              tickFormatter={(v) => formatCurrency(v)}
+                              stroke="#6B7280"
+                              fontSize={12}
+                            />
+                            <Tooltip
+                              formatter={(value) => formatCurrency(Number(value))}
+                              labelFormatter={(value) =>
+                                `Week of ${parse(value as string, "yyyy-MM-dd", new Date()).toLocaleDateString()}`
+                              }
+                              contentStyle={{
+                                backgroundColor: "white",
+                                border: "1px solid #E5E7EB",
+                                borderRadius: "8px",
+                              }}
+                            />
+                            <Line
+                              type="monotone"
+                              dataKey="netIncomeA"
+                              stroke={BRAND_COLORS.success}
+                              strokeWidth={3}
+                              dot={{ fill: BRAND_COLORS.success, strokeWidth: 2, r: 4 }}
+                              name={comparativeLabelA}
+                            />
+                            <Line
+                              type="monotone"
+                              dataKey="netIncomeB"
+                              stroke={BRAND_COLORS.gray[600] || "#4B5563"}
+                              strokeWidth={2}
+                              strokeDasharray="5 5"
+                              dot={{ fill: BRAND_COLORS.gray[600] || "#4B5563", strokeWidth: 2, r: 3 }}
+                              name={comparativeLabelB}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {(comparativeVarianceRows.income.length > 0 ||
+                comparativeVarianceRows.cogs.length > 0 ||
+                comparativeVarianceRows.expenses.length > 0) && (
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                  <div className="p-6 border-b border-gray-100">
+                    <h2 className="text-xl font-semibold text-gray-900">Account-Level Analysis</h2>
+                    <p className="text-sm text-gray-600 mt-1">Detailed variance breakdown by account</p>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Account
+                          </th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            {comparativeLabelA}
+                          </th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            {comparativeLabelB}
+                          </th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Variance $
+                          </th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Variance %
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {comparativeVarianceRows.income.length > 0 && (
+                          <>
+                            <tr className="bg-green-50">
+                              {(() => {
+                                const totals = comparativeSectionTotals(comparativeVarianceRows.income);
+                                return (
+                                  <>
+                                    <td className="px-6 py-4 text-sm font-bold text-green-800">INCOME</td>
+                                    <td className="px-6 py-4 text-sm font-bold text-green-800 text-right">
+                                      {formatCurrency(totals.a)}
+                                    </td>
+                                    <td className="px-6 py-4 text-sm font-bold text-green-800 text-right">
+                                      {formatCurrency(totals.b)}
+                                    </td>
+                                    <td className={`px-6 py-4 text-sm font-bold text-right ${getComparativeChangeColor(totals.var)}`}>
+                                      {formatCurrency(totals.var)}
+                                    </td>
+                                    <td className={`px-6 py-4 text-sm font-bold text-right ${getComparativeChangeColor(totals.var)}`}>
+                                      {totals.varPct !== null ? formatComparativePercentage(totals.varPct * 100) : ""}
+                                    </td>
+                                  </>
+                                );
+                              })()}
+                            </tr>
+                            {comparativeVarianceRows.income.slice(0, 10).map((row) => (
+                              <tr
+                                key={row.account}
+                                onClick={() => showComparativeTransactionDetails(row.account)}
+                                className="hover:bg-gray-50 cursor-pointer transition-colors"
+                              >
+                                <td className="px-6 py-4 text-sm text-gray-900">{row.account}</td>
+                                <td className="px-6 py-4 text-sm text-right text-gray-900">
+                                  {formatCurrency(row.a)}
+                                </td>
+                                <td className="px-6 py-4 text-sm text-right text-gray-600">
+                                  {formatCurrency(row.b)}
+                                </td>
+                                <td className={`px-6 py-4 text-sm text-right font-medium ${getComparativeChangeColor(row.var)}`}>
+                                  {formatCurrency(row.var)}
+                                </td>
+                                <td className={`px-6 py-4 text-sm text-right font-medium ${getComparativeChangeColor(row.var)}`}>
+                                  {row.varPct !== null ? formatComparativePercentage(row.varPct * 100) : ""}
+                                </td>
+                              </tr>
+                            ))}
+                          </>
+                        )}
+
+                        {comparativeVarianceRows.cogs.length > 0 && (
+                          <>
+                            <tr className="bg-yellow-50">
+                              {(() => {
+                                const totals = comparativeSectionTotals(comparativeVarianceRows.cogs);
+                                return (
+                                  <>
+                                    <td className="px-6 py-4 text-sm font-bold text-yellow-800">COGS</td>
+                                    <td className="px-6 py-4 text-sm font-bold text-yellow-800 text-right">
+                                      {formatCurrency(totals.a)}
+                                    </td>
+                                    <td className="px-6 py-4 text-sm font-bold text-yellow-800 text-right">
+                                      {formatCurrency(totals.b)}
+                                    </td>
+                                    <td className="px-6 py-4 text-sm font-bold text-yellow-800 text-right">
+                                      {formatCurrency(totals.var)}
+                                    </td>
+                                    <td className="px-6 py-4 text-sm font-bold text-yellow-800 text-right">
+                                      {totals.varPct !== null ? formatComparativePercentage(totals.varPct * 100) : ""}
+                                    </td>
+                                  </>
+                                );
+                              })()}
+                            </tr>
+                            {comparativeVarianceRows.cogs.slice(0, 10).map((row) => (
+                              <tr
+                                key={row.account}
+                                onClick={() => showComparativeTransactionDetails(row.account)}
+                                className="hover:bg-gray-50 cursor-pointer transition-colors"
+                              >
+                                <td className="px-6 py-4 text-sm text-gray-900">{row.account}</td>
+                                <td className="px-6 py-4 text-sm text-right text-gray-900">
+                                  {formatCurrency(row.a)}
+                                </td>
+                                <td className="px-6 py-4 text-sm text-right text-gray-600">
+                                  {formatCurrency(row.b)}
+                                </td>
+                                <td className={`px-6 py-4 text-sm text-right font-medium ${getComparativeChangeColor(row.var)}`}>
+                                  {formatCurrency(row.var)}
+                                </td>
+                                <td className={`px-6 py-4 text-sm text-right font-medium ${getComparativeChangeColor(row.var)}`}>
+                                  {row.varPct !== null ? formatComparativePercentage(row.varPct * 100) : ""}
+                                </td>
+                              </tr>
+                            ))}
+                          </>
+                        )}
+
+                        {(() => {
+                          if (comparativeVarianceRows.income.length > 0 || comparativeVarianceRows.cogs.length > 0) {
+                            const incomeTotals = comparativeSectionTotals(comparativeVarianceRows.income);
+                            const cogsTotals = comparativeSectionTotals(comparativeVarianceRows.cogs);
+                            const a = incomeTotals.a + cogsTotals.a;
+                            const b = incomeTotals.b + cogsTotals.b;
+                            const variance = a - b;
+                            const variancePct = b ? variance / Math.abs(b) : null;
+
+                            return (
+                              <tr className="bg-blue-50">
+                                <td className="px-6 py-4 text-sm font-bold text-blue-800">GROSS PROFIT</td>
+                                <td className="px-6 py-4 text-sm font-bold text-blue-800 text-right">
+                                  {formatCurrency(a)}
+                                </td>
+                                <td className="px-6 py-4 text-sm font-bold text-blue-800 text-right">
+                                  {formatCurrency(b)}
+                                </td>
+                                <td className={`px-6 py-4 text-sm font-bold text-right ${getComparativeChangeColor(variance)}`}>
+                                  {formatCurrency(variance)}
+                                </td>
+                                <td className={`px-6 py-4 text-sm font-bold text-right ${getComparativeChangeColor(variance)}`}>
+                                  {variancePct !== null ? formatComparativePercentage(variancePct * 100) : ""}
+                                </td>
+                              </tr>
+                            );
+                          }
+                          return null;
+                        })()}
+
+                        {comparativeVarianceRows.expenses.length > 0 && (
+                          <>
+                            <tr className="bg-red-50">
+                              {(() => {
+                                const totals = comparativeSectionTotals(comparativeVarianceRows.expenses);
+                                return (
+                                  <>
+                                    <td className="px-6 py-4 text-sm font-bold text-red-800">OPERATING EXPENSES</td>
+                                    <td className="px-6 py-4 text-sm font-bold text-red-800 text-right">
+                                      {formatCurrency(totals.a)}
+                                    </td>
+                                    <td className="px-6 py-4 text-sm font-bold text-red-800 text-right">
+                                      {formatCurrency(totals.b)}
+                                    </td>
+                                    <td className="px-6 py-4 text-sm font-bold text-red-800 text-right">
+                                      {formatCurrency(totals.var)}
+                                    </td>
+                                    <td className="px-6 py-4 text-sm font-bold text-red-800 text-right">
+                                      {totals.varPct !== null ? formatComparativePercentage(totals.varPct * 100) : ""}
+                                    </td>
+                                  </>
+                                );
+                              })()}
+                            </tr>
+                            {comparativeVarianceRows.expenses.slice(0, 10).map((row) => (
+                              <tr
+                                key={row.account}
+                                onClick={() => showComparativeTransactionDetails(row.account)}
+                                className="hover:bg-gray-50 cursor-pointer transition-colors"
+                              >
+                                <td className="px-6 py-4 text-sm text-gray-900">{row.account}</td>
+                                <td className="px-6 py-4 text-sm text-right text-gray-900">
+                                  {formatCurrency(row.a)}
+                                </td>
+                                <td className="px-6 py-4 text-sm text-right text-gray-600">
+                                  {formatCurrency(row.b)}
+                                </td>
+                                <td className={`px-6 py-4 text-sm text-right font-medium ${getComparativeChangeColor(row.var)}`}>
+                                  {formatCurrency(row.var)}
+                                </td>
+                                <td className={`px-6 py-4 text-sm text-right font-medium ${getComparativeChangeColor(row.var)}`}>
+                                  {row.varPct !== null ? formatComparativePercentage(row.varPct * 100) : ""}
+                                </td>
+                              </tr>
+                            ))}
+                          </>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : reportType === "pl" ? (
             <>
               <div style={{ display: 'grid', gap: '16px' }}>
                 <div style={{
@@ -5857,6 +6991,75 @@ export default function EnhancedMobileDashboard() {
               alt="Production detail"
               style={{ display: 'block', maxWidth: '80vw', maxHeight: '80vh', borderRadius: '12px' }}
             />
+          </div>
+        </div>
+      )}
+
+      {showComparativeModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-5xl w-full max-h-[80vh] flex flex-col shadow-2xl">
+            <div className="p-6 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-xl font-semibold text-gray-900">
+                {comparativeModalTitle} - Transaction Details
+              </h3>
+              <button
+                onClick={() => setShowComparativeModal(false)}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Date
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Description
+                    </th>
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Amount
+                    </th>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Customer
+                    </th>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Set
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {comparativeModalTransactions.map((transaction, idx) => {
+                    const amount = (Number(transaction.credit) || 0) - (Number(transaction.debit) || 0);
+                    return (
+                      <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-6 py-4 text-sm text-gray-900">{formatDate(transaction.date)}</td>
+                        <td className="px-6 py-4 text-sm text-gray-900">{transaction.memo || transaction.account}</td>
+                        <td className={`px-6 py-4 text-sm text-right font-medium ${getComparativeChangeColor(amount)}`}>
+                          {formatCurrency(Math.abs(amount))}
+                        </td>
+                        <td className="px-6 py-4 text-sm text-center text-gray-600">
+                          {transaction.customer || "-"}
+                        </td>
+                        <td className="px-6 py-4 text-sm text-center">
+                          <span
+                            className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                              transaction.set === 'A'
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-gray-100 text-gray-800'
+                            }`}
+                          >
+                            {transaction.set === 'A' ? comparativeLabelA : comparativeLabelB}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
