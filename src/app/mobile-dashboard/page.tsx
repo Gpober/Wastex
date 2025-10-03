@@ -14,6 +14,8 @@ import {
   ChevronLeft,
   ChevronRight,
   TrendingUp,
+  ArrowUpRight,
+  BarChart3,
   Award,
   AlertTriangle,
   AlertCircle,
@@ -34,6 +36,7 @@ import {
 } from "lucide-react";
 
 import {
+  differenceInCalendarDays,
   endOfMonth,
   endOfQuarter,
   endOfWeek,
@@ -46,7 +49,10 @@ import {
   startOfMonth,
   startOfQuarter,
   startOfWeek,
+  startOfYear,
+  subDays,
   subMonths,
+  subYears,
 } from "date-fns";
 
 import { supabase } from "@/lib/supabaseClient";
@@ -145,6 +151,37 @@ interface JournalEntryLine {
   customer: string | null;
   debit: number | null;
   credit: number | null;
+}
+
+interface ComparativeHighlight {
+  title: string;
+  stat: string;
+  description: string;
+  icon: LucideIcon;
+  iconColor: string;
+}
+
+interface ComparativeMetric {
+  key: string;
+  label: string;
+  current: number;
+  previous: number;
+  variant: "currency" | "percentage";
+  direction: "increase-good" | "decrease-good" | "neutral";
+}
+
+interface ComparativeInsightSummary {
+  title: string;
+  description: string;
+  tone: "positive" | "negative" | "neutral" | "warning";
+}
+
+interface ComparativeKPISnapshot {
+  revenue: number;
+  cogs: number;
+  opEx: number;
+  grossProfit: number;
+  netIncome: number;
 }
 
 const getMonthName = (m: number) =>
@@ -429,7 +466,7 @@ const insights: Insight[] = [
 export default function EnhancedMobileDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reportType, setReportType] = useState<
-    "pl" | "cf" | "ar" | "ap" | "payroll" | "production"
+    "pl" | "cf" | "ar" | "ap" | "payroll" | "production" | "comparative"
   >("pl");
   const [reportPeriod, setReportPeriod] = useState<
     "Monthly" | "Custom" | "Year to Date" | "Trailing 12" | "Quarterly"
@@ -466,6 +503,14 @@ export default function EnhancedMobileDashboard() {
   const [payrollTotals, setPayrollTotals] = useState<number>(0);
   const [employeeBreakdown, setEmployeeBreakdown] = useState<Record<string, { total: number; payments: Transaction[] }>>({});
   const [employeeTotals, setEmployeeTotals] = useState<Category[]>([]);
+  const [comparativeMetrics, setComparativeMetrics] = useState<ComparativeMetric[]>([]);
+  const [comparativeInsightsFeed, setComparativeInsightsFeed] = useState<ComparativeInsightSummary[]>([]);
+  const [comparativePeriodLabels, setComparativePeriodLabels] = useState<{ current: string; previous: string }>({
+    current: "",
+    previous: "",
+  });
+  const [comparativeLoading, setComparativeLoading] = useState(false);
+  const [comparativeError, setComparativeError] = useState<string | null>(null);
 
   // AI CFO States
   const [isListening, setIsListening] = useState(false);
@@ -1541,6 +1586,16 @@ export default function EnhancedMobileDashboard() {
   }, [reportType, fetchProductionEntries]);
 
   useEffect(() => {
+    setView("overview");
+    setSelectedProperty(null);
+    setSelectedCategory(null);
+    setComparativeLoading(false);
+    if (reportType !== "comparative") {
+      setComparativeError(null);
+    }
+  }, [reportType]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     if (!navigator.onLine) return;
     if (productionEntries.some((entry) => entry.localOnly)) {
@@ -1859,7 +1914,7 @@ export default function EnhancedMobileDashboard() {
 
   useEffect(() => {
     const load = async () => {
-      if (reportType === "production") {
+      if (reportType === "production" || reportType === "comparative") {
         setProperties([]);
         return;
       }
@@ -2037,6 +2092,11 @@ export default function EnhancedMobileDashboard() {
       setProperties(finalList);
     };
     load();
+  }, [reportType, reportPeriod, month, year, customStart, customEnd, getDateRange]);
+
+  useEffect(() => {
+    if (reportType !== "comparative") return;
+    loadComparativeData();
   }, [reportType, reportPeriod, month, year, customStart, customEnd, getDateRange]);
 
   const revenueKing = useMemo(() => {
@@ -2220,6 +2280,476 @@ export default function EnhancedMobileDashboard() {
     }
     return formatCurrency(n);
   };
+
+  const formatPercentage = (value: number) => {
+    if (!Number.isFinite(value)) return "--";
+    const clamped = Math.max(0, Math.min(1, value));
+    const decimals = clamped >= 0.1 ? 0 : 1;
+    return `${(clamped * 100).toFixed(decimals)}%`;
+  };
+
+  const formatRangeLabel = (start: string, end: string) => {
+    if (!start || !end) return "";
+    const startDate = parseISO(start);
+    const endDate = parseISO(end);
+    if (isSameDay(startDate, endDate)) {
+      return format(startDate, "MMM d, yyyy");
+    }
+    if (startDate.getFullYear() === endDate.getFullYear()) {
+      if (startDate.getMonth() === endDate.getMonth()) {
+        return `${format(startDate, "MMM d")} - ${format(endDate, "d, yyyy")}`;
+      }
+      return `${format(startDate, "MMM d")} - ${format(endDate, "MMM d, yyyy")}`;
+    }
+    return `${format(startDate, "MMM d, yyyy")} - ${format(endDate, "MMM d, yyyy")}`;
+  };
+
+  const computeComparativeKPIs = (rows: JournalRow[]): ComparativeKPISnapshot => {
+    const totals = rows.reduce(
+      (acc, row) => {
+        const type = (row.account_type || "").toLowerCase();
+        const debit = Number(row.debit) || 0;
+        const credit = Number(row.credit) || 0;
+        const amount = credit - debit;
+
+        if (type.includes("income") || type.includes("revenue")) {
+          acc.revenue += amount;
+        } else if (type.includes("cost of goods sold") || type.includes("cogs")) {
+          acc.cogs += amount;
+        } else if (type.includes("expense")) {
+          acc.opEx += amount;
+        }
+        return acc;
+      },
+      { revenue: 0, cogs: 0, opEx: 0 },
+    );
+
+    const grossProfit = totals.revenue + totals.cogs;
+    const netIncome = grossProfit + totals.opEx;
+
+    return {
+      revenue: totals.revenue,
+      cogs: totals.cogs,
+      opEx: totals.opEx,
+      grossProfit,
+      netIncome,
+    };
+  };
+
+  const buildComparativeInsights = (
+    current: ComparativeKPISnapshot,
+    previous: ComparativeKPISnapshot,
+    currentLabel: string,
+    previousLabel: string,
+  ): ComparativeInsightSummary[] => {
+    const insights: ComparativeInsightSummary[] = [];
+
+    const revenueDiff = current.revenue - previous.revenue;
+    if (Math.abs(revenueDiff) > 10000) {
+      const leader = revenueDiff >= 0 ? currentLabel : previousLabel;
+      const laggard = revenueDiff >= 0 ? previousLabel : currentLabel;
+      insights.push({
+        tone: revenueDiff >= 0 ? "positive" : "negative",
+        title: `${leader} outperformed on revenue`,
+        description: `${leader} generated ${formatCurrency(Math.abs(revenueDiff))} more revenue than ${laggard}.`,
+      });
+    }
+
+    const netDiff = current.netIncome - previous.netIncome;
+    if (Math.abs(netDiff) > 5000) {
+      const leader = netDiff >= 0 ? currentLabel : previousLabel;
+      const laggard = netDiff >= 0 ? previousLabel : currentLabel;
+      insights.push({
+        tone: netDiff >= 0 ? "positive" : "negative",
+        title: `${leader} delivered stronger profitability`,
+        description: `${leader} produced ${formatCurrency(Math.abs(netDiff))} more net income than ${laggard}.`,
+      });
+    }
+
+    const expenseDiff = Math.abs(current.opEx) - Math.abs(previous.opEx);
+    if (Math.abs(expenseDiff) > 5000) {
+      const efficient = expenseDiff <= 0 ? currentLabel : previousLabel;
+      const higher = expenseDiff <= 0 ? previousLabel : currentLabel;
+      insights.push({
+        tone: "neutral",
+        title: `${efficient} managed operating spend better`,
+        description: `${efficient} spent ${formatCurrency(Math.abs(expenseDiff))} less on operating expenses than ${higher}.`,
+      });
+    }
+
+    const grossProfitDiff = current.grossProfit - previous.grossProfit;
+    if (Math.abs(grossProfitDiff) > 5000) {
+      const leader = grossProfitDiff >= 0 ? currentLabel : previousLabel;
+      const laggard = grossProfitDiff >= 0 ? previousLabel : currentLabel;
+      insights.push({
+        tone: grossProfitDiff >= 0 ? "positive" : "warning",
+        title: `${leader} captured more gross profit`,
+        description: `${leader} maintained a ${formatCurrency(Math.abs(grossProfitDiff))} gross profit advantage over ${laggard}.`,
+      });
+    }
+
+    const currentMargin = current.revenue
+      ? (current.grossProfit / current.revenue) * 100
+      : 0;
+    const previousMargin = previous.revenue
+      ? (previous.grossProfit / previous.revenue) * 100
+      : 0;
+    const marginDiff = currentMargin - previousMargin;
+    if (Math.abs(marginDiff) > 1) {
+      const leader = marginDiff >= 0 ? currentLabel : previousLabel;
+      const laggard = marginDiff >= 0 ? previousLabel : currentLabel;
+      insights.push({
+        tone: marginDiff >= 0 ? "positive" : "negative",
+        title: `${leader} margins ${marginDiff >= 0 ? "expanded" : "compressed"}`,
+        description: `${leader} ran ${Math.abs(marginDiff).toFixed(1)} pts ${
+          marginDiff >= 0 ? "above" : "below"
+        } ${laggard} on gross margin.`,
+      });
+    }
+
+    if (!insights.length) {
+      insights.push({
+        tone: "neutral",
+        title: "Performance remained stable",
+        description: `${currentLabel} tracked closely with ${previousLabel} across key metrics.`,
+      });
+    }
+
+    return insights;
+  };
+
+  const getComparativeRanges = useCallback(() => {
+    if (reportType !== "comparative") return null;
+
+    const { start, end } = getDateRange();
+    if (!start || !end) return null;
+
+    const currentStartDate = parseISO(start);
+    const currentEndDate = parseISO(end);
+
+    let previousStartDate: Date;
+    let previousEndDate: Date;
+
+    switch (reportPeriod) {
+      case "Monthly": {
+        const previousReference = subMonths(startOfMonth(currentStartDate), 1);
+        previousStartDate = startOfMonth(previousReference);
+        previousEndDate = endOfMonth(previousReference);
+        break;
+      }
+      case "Quarterly": {
+        const previousReference = subMonths(startOfQuarter(currentStartDate), 3);
+        previousStartDate = startOfQuarter(previousReference);
+        previousEndDate = endOfQuarter(previousReference);
+        break;
+      }
+      case "Year to Date": {
+        previousStartDate = startOfYear(subYears(currentStartDate, 1));
+        previousEndDate = subYears(currentEndDate, 1);
+        break;
+      }
+      case "Trailing 12": {
+        previousStartDate = subMonths(currentStartDate, 12);
+        previousEndDate = subMonths(currentEndDate, 12);
+        break;
+      }
+      case "Custom": {
+        const span = Math.max(0, differenceInCalendarDays(currentEndDate, currentStartDate));
+        previousEndDate = subDays(currentStartDate, 1);
+        previousStartDate = subDays(previousEndDate, span);
+        break;
+      }
+      default: {
+        const previousReference = subMonths(startOfMonth(currentStartDate), 1);
+        previousStartDate = startOfMonth(previousReference);
+        previousEndDate = endOfMonth(previousReference);
+      }
+    }
+
+    const previousStart = format(previousStartDate, "yyyy-MM-dd");
+    const previousEnd = format(previousEndDate, "yyyy-MM-dd");
+
+    return {
+      currentStart: start,
+      currentEnd: end,
+      previousStart,
+      previousEnd,
+      currentLabel: formatRangeLabel(start, end),
+      previousLabel: formatRangeLabel(previousStart, previousEnd),
+    };
+  }, [getDateRange, reportPeriod, reportType]);
+
+  const loadComparativeData = async () => {
+    if (reportType !== "comparative") return;
+
+    const ranges = getComparativeRanges();
+    if (!ranges) {
+      setComparativePeriodLabels({ current: "", previous: "" });
+      setComparativeMetrics([]);
+      setComparativeInsightsFeed([]);
+      setComparativeError(null);
+      return;
+    }
+
+    setComparativePeriodLabels({
+      current: ranges.currentLabel,
+      previous: ranges.previousLabel,
+    });
+
+    setComparativeLoading(true);
+    setComparativeError(null);
+
+    try {
+      const selectColumns = "account_type, debit, credit";
+      const [currentResponse, previousResponse] = await Promise.all([
+        supabase
+          .from("journal_entry_lines")
+          .select(selectColumns)
+          .gte("date", ranges.currentStart)
+          .lte("date", ranges.currentEnd),
+        supabase
+          .from("journal_entry_lines")
+          .select(selectColumns)
+          .gte("date", ranges.previousStart)
+          .lte("date", ranges.previousEnd),
+      ]);
+
+      if (currentResponse.error) throw currentResponse.error;
+      if (previousResponse.error) throw previousResponse.error;
+
+      const currentLines = (currentResponse.data as JournalRow[]) || [];
+      const previousLines = (previousResponse.data as JournalRow[]) || [];
+
+      const currentTotals = computeComparativeKPIs(currentLines);
+      const previousTotals = computeComparativeKPIs(previousLines);
+
+      const metrics: ComparativeMetric[] = [
+        {
+          key: "revenue",
+          label: "Revenue",
+          current: currentTotals.revenue,
+          previous: previousTotals.revenue,
+          variant: "currency",
+          direction: "increase-good",
+        },
+        {
+          key: "grossProfit",
+          label: "Gross Profit",
+          current: currentTotals.grossProfit,
+          previous: previousTotals.grossProfit,
+          variant: "currency",
+          direction: "increase-good",
+        },
+        {
+          key: "opEx",
+          label: "Operating Expenses",
+          current: Math.abs(currentTotals.opEx),
+          previous: Math.abs(previousTotals.opEx),
+          variant: "currency",
+          direction: "decrease-good",
+        },
+        {
+          key: "netIncome",
+          label: "Net Income",
+          current: currentTotals.netIncome,
+          previous: previousTotals.netIncome,
+          variant: "currency",
+          direction: "increase-good",
+        },
+        {
+          key: "margin",
+          label: "Gross Margin",
+          current:
+            currentTotals.revenue !== 0
+              ? (currentTotals.grossProfit / currentTotals.revenue) * 100
+              : 0,
+          previous:
+            previousTotals.revenue !== 0
+              ? (previousTotals.grossProfit / previousTotals.revenue) * 100
+              : 0,
+          variant: "percentage",
+          direction: "increase-good",
+        },
+      ];
+
+      setComparativeMetrics(metrics);
+      setComparativeInsightsFeed(
+        buildComparativeInsights(
+          currentTotals,
+          previousTotals,
+          ranges.currentLabel,
+          ranges.previousLabel,
+        ),
+      );
+    } catch (error) {
+      console.error("Failed to load comparative analysis", error);
+      setComparativeError("Unable to load comparative analysis. Please try again.");
+      setComparativeMetrics([]);
+      setComparativeInsightsFeed([]);
+    } finally {
+      setComparativeLoading(false);
+    }
+  };
+
+  const formatComparativeValue = (metric: ComparativeMetric, value: number) =>
+    metric.variant === "percentage"
+      ? `${value.toFixed(1)}%`
+      : formatCurrency(value);
+
+  const formatComparativeVariance = (metric: ComparativeMetric, variance: number) =>
+    metric.variant === "percentage"
+      ? `${variance >= 0 ? "+" : ""}${variance.toFixed(1)} pts`
+      : `${variance >= 0 ? "+" : "-"}${formatCurrency(Math.abs(variance))}`;
+
+  const comparativeHighlights = useMemo<ComparativeHighlight[]>(() => {
+    if (!properties.length) return [];
+
+    const metricInfo = (() => {
+      if (reportType === "pl") {
+        return {
+          label: "Net Income",
+          higherIsBetter: true,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) => p.netIncome || 0,
+        };
+      }
+      if (reportType === "cf") {
+        return {
+          label: "Net Cash Flow",
+          higherIsBetter: true,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) =>
+            (p.operating || 0) + (p.financing || 0) + (p.investing || 0),
+        };
+      }
+      if (reportType === "ar") {
+        return {
+          label: "Outstanding Balance",
+          higherIsBetter: false,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) => p.total || 0,
+        };
+      }
+      if (reportType === "ap") {
+        return {
+          label: "Outstanding Balance",
+          higherIsBetter: false,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) => p.total || 0,
+        };
+      }
+      if (reportType === "payroll") {
+        return {
+          label: "Payroll Spend",
+          higherIsBetter: false,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) => p.expenses || 0,
+        };
+      }
+      return null;
+    })();
+
+    if (!metricInfo) return [];
+
+    const { label, higherIsBetter, format: formatMetric, getValue } = metricInfo;
+    const sorted = [...properties].sort((a, b) =>
+      higherIsBetter ? getValue(b) - getValue(a) : getValue(a) - getValue(b),
+    );
+
+    const top = sorted[0];
+    if (!top) return [];
+
+    const topValue = getValue(top);
+    const second = sorted[1];
+    const averageValue =
+      sorted.reduce((sum, p) => sum + getValue(p), 0) / sorted.length || 0;
+
+    const highlightCards: ComparativeHighlight[] = [];
+
+    const diffToSecondRaw = second ? topValue - getValue(second) : 0;
+    const diffToSecond = Math.abs(diffToSecondRaw);
+    const leaderTitle = higherIsBetter ? "Top Performer" : "Lowest Exposure";
+    const leaderIcon = higherIsBetter ? TrendingUp : CheckCircle;
+    const leaderColor = higherIsBetter ? BRAND_COLORS.primary : BRAND_COLORS.success;
+
+    highlightCards.push({
+      title: leaderTitle,
+      stat: formatMetric(topValue),
+      icon: leaderIcon,
+      iconColor: leaderColor,
+      description: second
+        ? higherIsBetter
+          ? diffToSecondRaw >= 0
+            ? `${top.name} leads ${second.name} by ${formatMetric(diffToSecond)} in ${label.toLowerCase()}.`
+            : `${top.name} trails ${second.name} by ${formatMetric(diffToSecond)}, despite ranking first due to tie-breakers.`
+          : diffToSecondRaw <= 0
+            ? `${top.name} carries ${formatMetric(diffToSecond)} less ${label.toLowerCase()} than ${second.name}.`
+            : `${top.name} holds ${formatMetric(diffToSecond)} more ${label.toLowerCase()} than ${second.name}.`
+        : `${top.name} is the only property with ${label.toLowerCase()} activity this period.`,
+    });
+
+    const totalBase = sorted.reduce(
+      (sum, p) =>
+        sum +
+        (higherIsBetter ? Math.max(getValue(p), 0) : Math.abs(getValue(p))),
+      0,
+    );
+    const shareBase = higherIsBetter ? Math.max(topValue, 0) : Math.abs(topValue);
+    const share = totalBase > 0 ? shareBase / totalBase : NaN;
+    const shareStat = Number.isFinite(share) ? formatPercentage(share) : "--";
+    const concentrationTitle = higherIsBetter
+      ? "Performance Concentration"
+      : "Exposure Concentration";
+    const concentrationIcon = higherIsBetter ? ArrowUpRight : AlertCircle;
+    const concentrationColor = higherIsBetter
+      ? BRAND_COLORS.accent
+      : BRAND_COLORS.warning;
+
+    highlightCards.push({
+      title: concentrationTitle,
+      stat: shareStat,
+      icon: concentrationIcon,
+      iconColor: concentrationColor,
+      description: Number.isFinite(share)
+        ? share > 0.5
+          ? `${top.name} accounts for ${shareStat.toLowerCase()} of portfolio ${label.toLowerCase()}.`
+          : `${top.name} represents ${shareStat.toLowerCase()} of total ${label.toLowerCase()}.`
+        : `Portfolio ${label.toLowerCase()} is neutral this period.`,
+    });
+
+    if (sorted.length > 1) {
+      const diffToAverageRaw = topValue - averageValue;
+      const diffToAverage = Math.abs(diffToAverageRaw);
+      const relativeWord =
+        diffToAverageRaw === 0
+          ? "in line with"
+          : diffToAverageRaw > 0
+          ? higherIsBetter
+            ? "above"
+            : "higher than"
+          : higherIsBetter
+          ? "below"
+          : "lower than";
+
+      highlightCards.push({
+        title: "Portfolio Spread",
+        stat: formatMetric(diffToAverage),
+        icon: AlertTriangle,
+        iconColor: BRAND_COLORS.secondary,
+        description:
+          diffToAverageRaw === 0
+            ? `${top.name} is in line with the portfolio average for ${label.toLowerCase()}.`
+            : `${top.name} is ${formatMetric(diffToAverage)} ${label.toLowerCase()} ${relativeWord} the portfolio average.`,
+      });
+    }
+
+    return highlightCards;
+  }, [properties, reportType]);
+
+  const netComparativeMetric = useMemo(
+    () => comparativeMetrics.find((metric) => metric.key === "netIncome") || null,
+    [comparativeMetrics],
+  );
 
   const rankingLabels: Record<RankingMetric, string> = {
     revenue: "Revenue",
@@ -2728,6 +3258,8 @@ export default function EnhancedMobileDashboard() {
               ? "Payroll Dashboard"
               : reportType === "production"
               ? "Production Dashboard"
+              : reportType === "comparative"
+              ? "Comparative Analysis"
               : reportType === "ap"
               ? "A/P Aging Report"
               : "A/R Aging Report"}
@@ -2737,6 +3269,10 @@ export default function EnhancedMobileDashboard() {
               ? `${productionRangeLabel} • ${filteredProductionEntries.length} ${
                   filteredProductionEntries.length === 1 ? "Entry" : "Entries"
                 }`
+              : reportType === "comparative"
+              ? comparativePeriodLabels.current && comparativePeriodLabels.previous
+                ? `Comparing ${comparativePeriodLabels.current} vs ${comparativePeriodLabels.previous}`
+                : "Select a period to compare"
               : `${
                   reportType === "ar" || reportType === "ap"
                     ? "As of Today"
@@ -3066,7 +3602,7 @@ export default function EnhancedMobileDashboard() {
               value={reportType}
               onChange={(e) =>
                 setReportType(
-                  e.target.value as "pl" | "cf" | "ar" | "ap" | "payroll" | "production",
+                  e.target.value as "pl" | "cf" | "ar" | "ap" | "payroll" | "production" | "comparative",
                 )
               }
             >
@@ -3076,6 +3612,7 @@ export default function EnhancedMobileDashboard() {
               <option value="production">Production</option>
               <option value="ar">A/R Aging Report</option>
               <option value="ap">A/P Aging Report</option>
+              <option value="comparative">Comparative Analysis</option>
             </select>
           </div>
           {reportType === "production" ? (
@@ -3729,8 +4266,284 @@ export default function EnhancedMobileDashboard() {
       ) : (
         <>
           {view === "overview" && (
-            <div>
-              {/* Portfolio Insights */}
+            reportType === "comparative" ? (
+              <div>
+                <div
+                  style={{
+                    background: 'white',
+                    borderRadius: '16px',
+                    padding: '20px',
+                    marginBottom: '24px',
+                    border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                    boxShadow: '0 4px 20px rgba(86, 182, 233, 0.1)'
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'flex-start',
+                      gap: '16px',
+                      marginBottom: '16px'
+                    }}
+                  >
+                    <div>
+                      <h3 style={{ fontSize: '18px', fontWeight: '600', color: BRAND_COLORS.accent }}>Period Comparison</h3>
+                      <p style={{ fontSize: '12px', color: '#64748b' }}>
+                        {comparativePeriodLabels.current && comparativePeriodLabels.previous
+                          ? `${comparativePeriodLabels.current} vs ${comparativePeriodLabels.previous}`
+                          : 'Pick a reporting window to compare performance.'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={loadComparativeData}
+                      disabled={comparativeLoading}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        background: `linear-gradient(135deg, ${BRAND_COLORS.primary}, ${BRAND_COLORS.secondary})`,
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '999px',
+                        padding: '10px 16px',
+                        fontWeight: 600,
+                        cursor: comparativeLoading ? 'not-allowed' : 'pointer',
+                        boxShadow: '0 4px 12px rgba(86,182,233,0.24)'
+                      }}
+                    >
+                      <RefreshCcw size={16} />
+                      {comparativeLoading ? 'Refreshing...' : 'Refresh'}
+                    </button>
+                  </div>
+                  {comparativeError && (
+                    <div
+                      style={{
+                        background: '#fef2f2',
+                        borderRadius: '8px',
+                        padding: '12px',
+                        border: `1px solid ${BRAND_COLORS.danger}33`,
+                        color: BRAND_COLORS.danger,
+                        fontSize: '12px',
+                        marginBottom: '16px'
+                      }}
+                    >
+                      {comparativeError}
+                    </div>
+                  )}
+                  {comparativeLoading ? (
+                    <div style={{ textAlign: 'center', padding: '24px', color: '#64748b', fontSize: '14px' }}>
+                      Loading comparative insights...
+                    </div>
+                  ) : comparativeMetrics.length ? (
+                    <>
+                      {netComparativeMetric && (
+                        <div
+                          style={{
+                            background: `linear-gradient(135deg, ${BRAND_COLORS.primary}0f, ${BRAND_COLORS.secondary}14)`,
+                            borderRadius: '12px',
+                            padding: '16px',
+                            border: `1px solid ${BRAND_COLORS.primary}30`,
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.08em', color: BRAND_COLORS.primary }}>
+                              Net Income Shift
+                            </div>
+                            <div style={{ fontSize: '22px', fontWeight: 700, color: '#0f172a' }}>
+                              {formatComparativeValue(netComparativeMetric, netComparativeMetric.current)}
+                            </div>
+                            <div style={{ fontSize: '12px', color: '#64748b' }}>Current period total</div>
+                          </div>
+                          {(() => {
+                            const variance = netComparativeMetric.current - netComparativeMetric.previous;
+                            const trendPositive =
+                              netComparativeMetric.direction === 'decrease-good'
+                                ? variance <= 0
+                                : variance >= 0;
+                            const color = trendPositive ? BRAND_COLORS.success : BRAND_COLORS.danger;
+                            return (
+                              <div style={{ textAlign: 'right' }}>
+                                <div style={{ fontSize: '14px', fontWeight: 700, color }}>
+                                  {formatComparativeVariance(netComparativeMetric, variance)}
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#64748b' }}>vs prior period</div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                          gap: '12px',
+                          marginTop: '16px'
+                        }}
+                      >
+                        {comparativeMetrics.map((metric) => {
+                          const variance = metric.current - metric.previous;
+                          const trendPositive =
+                            metric.direction === 'decrease-good'
+                              ? variance <= 0
+                              : variance >= 0;
+                          const varianceColor = trendPositive ? BRAND_COLORS.success : BRAND_COLORS.danger;
+                          const VarianceIcon = trendPositive ? CheckCircle : AlertTriangle;
+                          const relativeChange =
+                            metric.variant === 'percentage' || Math.abs(metric.previous) < 1
+                              ? null
+                              : (variance / Math.abs(metric.previous)) * 100;
+                          return (
+                            <div
+                              key={metric.key}
+                              style={{
+                                background: 'linear-gradient(135deg, rgba(248,250,252,0.9), rgba(224,242,254,0.7))',
+                                borderRadius: '12px',
+                                padding: '16px',
+                                border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                                boxShadow: '0 4px 16px rgba(15,23,42,0.06)',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '8px'
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ fontSize: '13px', fontWeight: 600, color: '#1e293b', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                  {metric.label}
+                                </span>
+                                <span style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a' }}>
+                                  {formatComparativeValue(metric, metric.current)}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: '12px', color: '#64748b' }}>
+                                Prior: <strong>{formatComparativeValue(metric, metric.previous)}</strong>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div
+                                  style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '50%',
+                                    background: `${varianceColor}1A`,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                >
+                                  <VarianceIcon size={16} color={varianceColor} />
+                                </div>
+                                <div>
+                                  <div style={{ fontSize: '13px', fontWeight: 600, color: varianceColor }}>
+                                    {formatComparativeVariance(metric, variance)}
+                                  </div>
+                                  {relativeChange !== null && Number.isFinite(relativeChange) && (
+                                    <div style={{ fontSize: '11px', color: '#64748b' }}>
+                                      {`${relativeChange >= 0 ? '+' : ''}${relativeChange.toFixed(1)}% vs prior`}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  ) : (
+                    <div
+                      style={{
+                        textAlign: 'center',
+                        padding: '20px',
+                        fontSize: '13px',
+                        color: '#64748b',
+                        background: 'rgba(248,250,252,0.8)',
+                        borderRadius: '12px',
+                        border: `1px dashed ${BRAND_COLORS.gray[200]}`
+                      }}
+                    >
+                      No activity recorded for the selected periods.
+                    </div>
+                  )}
+                </div>
+                {!comparativeLoading && comparativeInsightsFeed.length > 0 && (
+                  <div
+                    style={{
+                      background: 'white',
+                      borderRadius: '16px',
+                      padding: '20px',
+                      border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                      boxShadow: '0 4px 20px rgba(15,23,42,0.08)',
+                      display: 'grid',
+                      gap: '12px'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <BarChart3 size={18} style={{ color: BRAND_COLORS.accent }} />
+                      <h3 style={{ fontSize: '18px', fontWeight: '600', color: BRAND_COLORS.accent }}>
+                        Narrative Insights
+                      </h3>
+                    </div>
+                    {comparativeInsightsFeed.map((insight, index) => {
+                      const toneColor =
+                        insight.tone === 'positive'
+                          ? BRAND_COLORS.success
+                          : insight.tone === 'negative'
+                          ? BRAND_COLORS.danger
+                          : insight.tone === 'warning'
+                          ? BRAND_COLORS.warning
+                          : BRAND_COLORS.accent;
+                      const InsightIcon =
+                        insight.tone === 'positive'
+                          ? CheckCircle
+                          : insight.tone === 'negative'
+                          ? AlertTriangle
+                          : insight.tone === 'warning'
+                          ? AlertTriangle
+                          : AlertCircle;
+                      return (
+                        <div
+                          key={`${insight.title}-${index}`}
+                          style={{
+                            display: 'flex',
+                            gap: '12px',
+                            padding: '12px',
+                            borderRadius: '10px',
+                            border: `1px solid ${toneColor}33`,
+                            background: `${toneColor}0D`
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: '32px',
+                              height: '32px',
+                              borderRadius: '50%',
+                              background: `${toneColor}1A`,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center'
+                            }}
+                          >
+                            <InsightIcon size={16} color={toneColor} />
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '14px', fontWeight: 600, color: '#1e293b', marginBottom: '4px' }}>
+                              {insight.title}
+                            </div>
+                            <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.4 }}>
+                              {insight.description}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                {/* Portfolio Insights */}
           <div style={{
             background: 'white',
             borderRadius: '16px',
@@ -4135,11 +4948,11 @@ export default function EnhancedMobileDashboard() {
                     </div>
                   </>
                 )}
-              </div>
             </div>
+          </div>
 
-            <div style={{ display: 'grid', gap: '12px' }}>
-              {insights.map((insight, index) => {
+          <div style={{ display: 'grid', gap: '12px' }}>
+            {insights.map((insight, index) => {
                 const Icon = insight.icon;
                 const bgColor = insight.type === 'success' ? '#f0f9ff' :
                                insight.type === 'warning' ? '#fffbeb' : '#f8fafc';
@@ -4169,6 +4982,84 @@ export default function EnhancedMobileDashboard() {
               })}
             </div>
           </div>
+
+          {comparativeHighlights.length > 0 && (
+            <div
+              style={{
+                background: 'white',
+                borderRadius: '16px',
+                padding: '20px',
+                marginBottom: '24px',
+                border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                boxShadow: '0 6px 24px rgba(86, 182, 233, 0.12)'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                <BarChart3 size={18} style={{ color: BRAND_COLORS.accent }} />
+                <div>
+                  <h3 style={{ fontSize: '18px', fontWeight: '600', color: BRAND_COLORS.accent }}>
+                    Comparative Analysis
+                  </h3>
+                  <p style={{ fontSize: '12px', color: '#64748b' }}>
+                    Snapshot of how each property stacks up this period.
+                  </p>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gap: '12px' }}>
+                {comparativeHighlights.map((highlight, index) => {
+                  const CardIcon = highlight.icon;
+                  return (
+                    <div
+                      key={`${highlight.title}-${index}`}
+                      style={{
+                        background: 'linear-gradient(135deg, rgba(86, 182, 233, 0.06), rgba(124, 196, 237, 0.08))',
+                        borderRadius: '12px',
+                        padding: '16px',
+                        border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                        boxShadow: '0 6px 16px rgba(148, 197, 232, 0.12)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div
+                          style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '50%',
+                            background: `${highlight.iconColor}1A`,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                        >
+                          <CardIcon size={16} style={{ color: highlight.iconColor }} />
+                        </div>
+                        <span
+                          style={{
+                            fontSize: '13px',
+                            fontWeight: '600',
+                            color: '#1e293b',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.04em'
+                          }}
+                        >
+                          {highlight.title}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '22px', fontWeight: '700', color: highlight.iconColor }}>
+                        {highlight.stat}
+                      </div>
+                      <p style={{ fontSize: '12px', color: '#475569', lineHeight: '1.5' }}>
+                        {highlight.description}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Enhanced Customer KPI Boxes */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px' }}>
@@ -4638,7 +5529,7 @@ export default function EnhancedMobileDashboard() {
         </div>
       )}
 
-      {view === "summary" && rankingMetric && (
+      {view === "summary" && rankingMetric && reportType !== "comparative" && (
         <div>
           <button
             onClick={back}
@@ -4704,7 +5595,7 @@ export default function EnhancedMobileDashboard() {
         </div>
       )}
 
-      {view === "report" && (
+      {view === "report" && reportType !== "comparative" && (
         <div>
           <button 
             onClick={back}
@@ -5166,7 +6057,7 @@ export default function EnhancedMobileDashboard() {
           </div>
         )}
 
-      {view === "detail" && (
+      {view === "detail" && reportType !== "comparative" && (
         <div>
           <button
             onClick={back}
