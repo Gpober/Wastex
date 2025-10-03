@@ -14,6 +14,8 @@ import {
   ChevronLeft,
   ChevronRight,
   TrendingUp,
+  ArrowUpRight,
+  BarChart3,
   Award,
   AlertTriangle,
   AlertCircle,
@@ -145,6 +147,14 @@ interface JournalEntryLine {
   customer: string | null;
   debit: number | null;
   credit: number | null;
+}
+
+interface ComparativeHighlight {
+  title: string;
+  stat: string;
+  description: string;
+  icon: LucideIcon;
+  iconColor: string;
 }
 
 const getMonthName = (m: number) =>
@@ -2221,6 +2231,158 @@ export default function EnhancedMobileDashboard() {
     return formatCurrency(n);
   };
 
+  const formatPercentage = (value: number) => {
+    if (!Number.isFinite(value)) return "--";
+    const clamped = Math.max(0, Math.min(1, value));
+    const decimals = clamped >= 0.1 ? 0 : 1;
+    return `${(clamped * 100).toFixed(decimals)}%`;
+  };
+
+  const comparativeHighlights = useMemo<ComparativeHighlight[]>(() => {
+    if (!properties.length) return [];
+
+    const metricInfo = (() => {
+      if (reportType === "pl") {
+        return {
+          label: "Net Income",
+          higherIsBetter: true,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) => p.netIncome || 0,
+        };
+      }
+      if (reportType === "cf") {
+        return {
+          label: "Net Cash Flow",
+          higherIsBetter: true,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) =>
+            (p.operating || 0) + (p.financing || 0) + (p.investing || 0),
+        };
+      }
+      if (reportType === "ar") {
+        return {
+          label: "Outstanding Balance",
+          higherIsBetter: false,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) => p.total || 0,
+        };
+      }
+      if (reportType === "ap") {
+        return {
+          label: "Outstanding Balance",
+          higherIsBetter: false,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) => p.total || 0,
+        };
+      }
+      if (reportType === "payroll") {
+        return {
+          label: "Payroll Spend",
+          higherIsBetter: false,
+          format: formatCurrency,
+          getValue: (p: PropertySummary) => p.expenses || 0,
+        };
+      }
+      return null;
+    })();
+
+    if (!metricInfo) return [];
+
+    const { label, higherIsBetter, format: formatMetric, getValue } = metricInfo;
+    const sorted = [...properties].sort((a, b) =>
+      higherIsBetter ? getValue(b) - getValue(a) : getValue(a) - getValue(b),
+    );
+
+    const top = sorted[0];
+    if (!top) return [];
+
+    const topValue = getValue(top);
+    const second = sorted[1];
+    const averageValue =
+      sorted.reduce((sum, p) => sum + getValue(p), 0) / sorted.length || 0;
+
+    const highlightCards: ComparativeHighlight[] = [];
+
+    const diffToSecondRaw = second ? topValue - getValue(second) : 0;
+    const diffToSecond = Math.abs(diffToSecondRaw);
+    const leaderTitle = higherIsBetter ? "Top Performer" : "Lowest Exposure";
+    const leaderIcon = higherIsBetter ? TrendingUp : CheckCircle;
+    const leaderColor = higherIsBetter ? BRAND_COLORS.primary : BRAND_COLORS.success;
+
+    highlightCards.push({
+      title: leaderTitle,
+      stat: formatMetric(topValue),
+      icon: leaderIcon,
+      iconColor: leaderColor,
+      description: second
+        ? higherIsBetter
+          ? diffToSecondRaw >= 0
+            ? `${top.name} leads ${second.name} by ${formatMetric(diffToSecond)} in ${label.toLowerCase()}.`
+            : `${top.name} trails ${second.name} by ${formatMetric(diffToSecond)}, despite ranking first due to tie-breakers.`
+          : diffToSecondRaw <= 0
+            ? `${top.name} carries ${formatMetric(diffToSecond)} less ${label.toLowerCase()} than ${second.name}.`
+            : `${top.name} holds ${formatMetric(diffToSecond)} more ${label.toLowerCase()} than ${second.name}.`
+        : `${top.name} is the only property with ${label.toLowerCase()} activity this period.`,
+    });
+
+    const totalBase = sorted.reduce(
+      (sum, p) =>
+        sum +
+        (higherIsBetter ? Math.max(getValue(p), 0) : Math.abs(getValue(p))),
+      0,
+    );
+    const shareBase = higherIsBetter ? Math.max(topValue, 0) : Math.abs(topValue);
+    const share = totalBase > 0 ? shareBase / totalBase : NaN;
+    const shareStat = Number.isFinite(share) ? formatPercentage(share) : "--";
+    const concentrationTitle = higherIsBetter
+      ? "Performance Concentration"
+      : "Exposure Concentration";
+    const concentrationIcon = higherIsBetter ? ArrowUpRight : AlertCircle;
+    const concentrationColor = higherIsBetter
+      ? BRAND_COLORS.accent
+      : BRAND_COLORS.warning;
+
+    highlightCards.push({
+      title: concentrationTitle,
+      stat: shareStat,
+      icon: concentrationIcon,
+      iconColor: concentrationColor,
+      description: Number.isFinite(share)
+        ? share > 0.5
+          ? `${top.name} accounts for ${shareStat.toLowerCase()} of portfolio ${label.toLowerCase()}.`
+          : `${top.name} represents ${shareStat.toLowerCase()} of total ${label.toLowerCase()}.`
+        : `Portfolio ${label.toLowerCase()} is neutral this period.`,
+    });
+
+    if (sorted.length > 1) {
+      const diffToAverageRaw = topValue - averageValue;
+      const diffToAverage = Math.abs(diffToAverageRaw);
+      const relativeWord =
+        diffToAverageRaw === 0
+          ? "in line with"
+          : diffToAverageRaw > 0
+          ? higherIsBetter
+            ? "above"
+            : "higher than"
+          : higherIsBetter
+          ? "below"
+          : "lower than";
+
+      highlightCards.push({
+        title: "Portfolio Spread",
+        stat: formatMetric(diffToAverage),
+        icon: AlertTriangle,
+        iconColor: BRAND_COLORS.secondary,
+        description:
+          diffToAverageRaw === 0
+            ? `${top.name} is in line with the portfolio average for ${label.toLowerCase()}.`
+            : `${top.name} is ${formatMetric(diffToAverage)} ${label.toLowerCase()} ${relativeWord} the portfolio average.`,
+      });
+    }
+
+    return highlightCards;
+  }, [properties, reportType]);
+
   const rankingLabels: Record<RankingMetric, string> = {
     revenue: "Revenue",
     margin: "Margin",
@@ -4135,11 +4297,11 @@ export default function EnhancedMobileDashboard() {
                     </div>
                   </>
                 )}
-              </div>
             </div>
+          </div>
 
-            <div style={{ display: 'grid', gap: '12px' }}>
-              {insights.map((insight, index) => {
+          <div style={{ display: 'grid', gap: '12px' }}>
+            {insights.map((insight, index) => {
                 const Icon = insight.icon;
                 const bgColor = insight.type === 'success' ? '#f0f9ff' :
                                insight.type === 'warning' ? '#fffbeb' : '#f8fafc';
@@ -4169,6 +4331,84 @@ export default function EnhancedMobileDashboard() {
               })}
             </div>
           </div>
+
+          {comparativeHighlights.length > 0 && (
+            <div
+              style={{
+                background: 'white',
+                borderRadius: '16px',
+                padding: '20px',
+                marginBottom: '24px',
+                border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                boxShadow: '0 6px 24px rgba(86, 182, 233, 0.12)'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                <BarChart3 size={18} style={{ color: BRAND_COLORS.accent }} />
+                <div>
+                  <h3 style={{ fontSize: '18px', fontWeight: '600', color: BRAND_COLORS.accent }}>
+                    Comparative Analysis
+                  </h3>
+                  <p style={{ fontSize: '12px', color: '#64748b' }}>
+                    Snapshot of how each property stacks up this period.
+                  </p>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gap: '12px' }}>
+                {comparativeHighlights.map((highlight, index) => {
+                  const CardIcon = highlight.icon;
+                  return (
+                    <div
+                      key={`${highlight.title}-${index}`}
+                      style={{
+                        background: 'linear-gradient(135deg, rgba(86, 182, 233, 0.06), rgba(124, 196, 237, 0.08))',
+                        borderRadius: '12px',
+                        padding: '16px',
+                        border: `1px solid ${BRAND_COLORS.gray[200]}`,
+                        boxShadow: '0 6px 16px rgba(148, 197, 232, 0.12)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div
+                          style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '50%',
+                            background: `${highlight.iconColor}1A`,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                        >
+                          <CardIcon size={16} style={{ color: highlight.iconColor }} />
+                        </div>
+                        <span
+                          style={{
+                            fontSize: '13px',
+                            fontWeight: '600',
+                            color: '#1e293b',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.04em'
+                          }}
+                        >
+                          {highlight.title}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '22px', fontWeight: '700', color: highlight.iconColor }}>
+                        {highlight.stat}
+                      </div>
+                      <p style={{ fontSize: '12px', color: '#475569', lineHeight: '1.5' }}>
+                        {highlight.description}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Enhanced Customer KPI Boxes */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px' }}>
