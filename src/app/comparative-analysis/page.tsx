@@ -56,6 +56,13 @@ type Insight = {
   impact: 'high' | 'medium' | 'low';
 };
 
+type ProductionKPIs = {
+  totalTonnage: number;
+  totalRevenue: number;
+  avgPricePerTon: number;
+  totalLogs: number;
+};
+
 export default function EnhancedComparativeAnalysis() {
   const [startA, setStartA] = useState("");
   const [endA, setEndA] = useState("");
@@ -70,7 +77,8 @@ export default function EnhancedComparativeAnalysis() {
     cogs: any[];
     expenses: any[];
   }>({ income: [], cogs: [], expenses: [] });
-  const [weeklyData, setWeeklyData] = useState<any[]>([]);
+  const [financialWeeklyData, setFinancialWeeklyData] = useState<any[]>([]);
+  const [productionWeeklyData, setProductionWeeklyData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [allLinesA, setAllLinesA] = useState<any[]>([]);
@@ -78,7 +86,11 @@ export default function EnhancedComparativeAnalysis() {
   const [showModal, setShowModal] = useState(false);
   const [modalTitle, setModalTitle] = useState("");
   const [modalTransactions, setModalTransactions] = useState<any[]>([]);
-  const [insights, setInsights] = useState<Insight[]>([]);
+  const [financialInsights, setFinancialInsights] = useState<Insight[]>([]);
+  const [productionInsights, setProductionInsights] = useState<Insight[]>([]);
+  const [productionDataA, setProductionDataA] = useState<ProductionKPIs | null>(null);
+  const [productionDataB, setProductionDataB] = useState<ProductionKPIs | null>(null);
+  const [activeTab, setActiveTab] = useState<'financial' | 'production'>('financial');
 
   // Labels for display
   const [labelA, setLabelA] = useState("A");
@@ -105,18 +117,24 @@ export default function EnhancedComparativeAnalysis() {
   }, [startA, endA, startB, endB]);
 
   const fetchCustomers = async () => {
-    const { data } = await supabase.from("journal_entry_lines").select("customer");
-    if (data) {
-      const unique = Array.from(
-        new Set(
-          data
-            .map((d) => d.customer)
-            .filter((c) => c && c.trim())
-            .map((c) => c.trim()),
-        ),
-      );
-      setCustomers(["All Customers", ...unique]);
-    }
+    const [{ data: financialData }, { data: productionData }] = await Promise.all([
+      supabase.from('journal_entry_lines').select('customer'),
+      supabase.from('wastex_production_logs').select('client_name'),
+    ]);
+
+    const unique = new Set<string>();
+
+    (financialData || [])
+      .map((d) => d.customer)
+      .filter((c): c is string => Boolean(c && c.trim()))
+      .forEach((c) => unique.add(c.trim()));
+
+    (productionData || [])
+      .map((d) => d.client_name)
+      .filter((c): c is string => Boolean(c && c.trim()))
+      .forEach((c) => unique.add(c.trim()));
+
+    setCustomers(["All Customers", ...Array.from(unique).sort((a, b) => a.localeCompare(b))]);
   };
 
   const fetchLines = async (start: string, end: string, customersFilter?: string[]) => {
@@ -132,6 +150,26 @@ export default function EnhancedComparativeAnalysis() {
       !customersFilter.includes("All Customers")
     ) {
       query = query.in("customer", customersFilter);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+  };
+
+  const fetchProductionLogs = async (start: string, end: string, customersFilter?: string[]) => {
+    let query = supabase
+      .from('wastex_production_logs')
+      .select('log_date, tonnage, price_per_ton, total_amount, client_name')
+      .gte('log_date', start)
+      .lte('log_date', end);
+
+    if (
+      customersFilter &&
+      customersFilter.length > 0 &&
+      !customersFilter.includes("All Customers")
+    ) {
+      query = query.in('client_name', customersFilter);
     }
 
     const { data, error } = await query;
@@ -157,7 +195,36 @@ export default function EnhancedComparativeAnalysis() {
     return { revenue, cogs, grossProfit, opEx, netIncome };
   };
 
-  const generateInsights = (dataA: KPIs, dataB: KPIs, labelA: string, labelB: string): Insight[] => {
+  const computeProductionKPIs = (logs: any[]): ProductionKPIs => {
+    const totals = logs.reduce(
+      (
+        acc,
+        log,
+      ) => {
+        const tonnage = Number(log.tonnage) || 0;
+        const totalAmount =
+          Number(log.total_amount) || tonnage * (Number(log.price_per_ton) || 0);
+
+        acc.totalTonnage += tonnage;
+        acc.totalRevenue += totalAmount;
+        acc.totalLogs += 1;
+        return acc;
+      },
+      { totalTonnage: 0, totalRevenue: 0, totalLogs: 0 },
+    );
+
+    const avgPricePerTon =
+      totals.totalTonnage > 0 ? totals.totalRevenue / totals.totalTonnage : 0;
+
+    return {
+      totalTonnage: totals.totalTonnage,
+      totalRevenue: totals.totalRevenue,
+      avgPricePerTon,
+      totalLogs: totals.totalLogs,
+    };
+  };
+
+  const generateFinancialInsights = (dataA: KPIs, dataB: KPIs, labelA: string, labelB: string): Insight[] => {
     const insights: Insight[] = [];
     
     // Revenue comparison - focus on dollar amounts
@@ -215,6 +282,92 @@ export default function EnhancedComparativeAnalysis() {
     return insights.slice(0, 3); // Keep top 3 insights
   };
 
+  const formatTonnage = (value: number) => {
+    return `${value.toLocaleString(undefined, {
+      maximumFractionDigits: 1,
+      minimumFractionDigits: value % 1 === 0 ? 0 : 1,
+    })} tons`;
+  };
+
+  const generateProductionInsights = (
+    dataA: ProductionKPIs,
+    dataB: ProductionKPIs,
+    labelA: string,
+    labelB: string,
+  ): Insight[] => {
+    const insights: Insight[] = [];
+
+    const tonnageDifference = dataA.totalTonnage - dataB.totalTonnage;
+    if (Math.abs(tonnageDifference) > 10) {
+      const leader = tonnageDifference > 0 ? labelA : labelB;
+      const trailer = tonnageDifference > 0 ? labelB : labelA;
+      insights.push({
+        type: tonnageDifference > 0 ? 'positive' : 'warning',
+        title: `${leader} Higher Production Volume`,
+        description: `${leader} processed ${formatTonnage(Math.abs(tonnageDifference))} more material than ${trailer}. Focus on staffing and equipment planning to maintain throughput.`,
+        impact:
+          Math.abs(tonnageDifference) > 75
+            ? 'high'
+            : Math.abs(tonnageDifference) > 40
+              ? 'medium'
+              : 'low',
+      });
+    }
+
+    const revenueDifference = dataA.totalRevenue - dataB.totalRevenue;
+    if (Math.abs(revenueDifference) > 5000) {
+      const leader = revenueDifference > 0 ? labelA : labelB;
+      const trailer = revenueDifference > 0 ? labelB : labelA;
+      insights.push({
+        type: revenueDifference > 0 ? 'positive' : 'negative',
+        title: `${leader} Driving More Production Revenue`,
+        description: `${leader} generated ${formatCurrency(Math.abs(revenueDifference))} more from production activity than ${trailer}. Investigate pricing, mix, or downtime impacts.`,
+        impact:
+          Math.abs(revenueDifference) > 75000
+            ? 'high'
+            : Math.abs(revenueDifference) > 25000
+              ? 'medium'
+              : 'low',
+      });
+    }
+
+    const priceDifference = dataA.avgPricePerTon - dataB.avgPricePerTon;
+    if (Math.abs(priceDifference) > 2) {
+      const premiumPeriod = priceDifference > 0 ? labelA : labelB;
+      const discountPeriod = priceDifference > 0 ? labelB : labelA;
+      insights.push({
+        type: priceDifference > 0 ? 'positive' : 'warning',
+        title: `${premiumPeriod} Secured Better Pricing`,
+        description: `${premiumPeriod} achieved ${formatCurrency(Math.abs(priceDifference))} higher average pricing per ton than ${discountPeriod}. Review contract terms and customer mix for optimization.`,
+        impact:
+          Math.abs(priceDifference) > 10
+            ? 'high'
+            : Math.abs(priceDifference) > 5
+              ? 'medium'
+              : 'low',
+      });
+    }
+
+    if (dataA.totalLogs !== dataB.totalLogs) {
+      const logDifference = dataA.totalLogs - dataB.totalLogs;
+      const busierPeriod = logDifference > 0 ? labelA : labelB;
+      const quieterPeriod = logDifference > 0 ? labelB : labelA;
+      insights.push({
+        type: 'neutral',
+        title: `${busierPeriod} Logged More Production Days`,
+        description: `${busierPeriod} recorded ${Math.abs(logDifference)} more production entries than ${quieterPeriod}. Evaluate scheduling efficiency and data capture consistency.`,
+        impact:
+          Math.abs(logDifference) > 15
+            ? 'high'
+            : Math.abs(logDifference) > 8
+              ? 'medium'
+              : 'low',
+      });
+    }
+
+    return insights.slice(0, 3);
+  };
+
   const aggregateWeekly = (linesA: any[], linesB: any[]) => {
     const weeks = new Map<string, { A: KPIs; B: KPIs }>();
     
@@ -255,7 +408,7 @@ export default function EnhancedComparativeAnalysis() {
         data.A.netIncome = data.A.grossProfit + data.A.opEx;
         data.B.grossProfit = data.B.revenue + data.B.cogs;
         data.B.netIncome = data.B.grossProfit + data.B.opEx;
-        
+
         return {
           week,
           revenueA: data.A.revenue,
@@ -264,6 +417,63 @@ export default function EnhancedComparativeAnalysis() {
           netIncomeB: data.B.netIncome,
           marginA: data.A.revenue ? (data.A.grossProfit / data.A.revenue) * 100 : 0,
           marginB: data.B.revenue ? (data.B.grossProfit / data.B.revenue) * 100 : 0
+        };
+      })
+      .sort((a, b) => a.week.localeCompare(b.week));
+  };
+
+  const aggregateProductionWeekly = (logsA: any[], logsB: any[]) => {
+    const weeks = new Map<
+      string,
+      {
+        A: { tonnage: number; revenue: number };
+        B: { tonnage: number; revenue: number };
+      }
+    >();
+
+    const processLogs = (logs: any[], key: 'A' | 'B') => {
+      logs.forEach((log) => {
+        if (!log.log_date) return;
+        const date = parse(log.log_date, 'yyyy-MM-dd', new Date());
+        const weekStart = new Date(date);
+        weekStart.setDate(date.getDate() - date.getDay());
+        const weekKey = weekStart.toISOString().split('T')[0];
+
+        if (!weeks.has(weekKey)) {
+          weeks.set(weekKey, {
+            A: { tonnage: 0, revenue: 0 },
+            B: { tonnage: 0, revenue: 0 },
+          });
+        }
+
+        const bucket = weeks.get(weekKey)!;
+        const tonnage = Number(log.tonnage) || 0;
+        const revenue =
+          Number(log.total_amount) || tonnage * (Number(log.price_per_ton) || 0);
+
+        bucket[key].tonnage += tonnage;
+        bucket[key].revenue += revenue;
+      });
+    };
+
+    processLogs(logsA, 'A');
+    processLogs(logsB, 'B');
+
+    return Array.from(weeks.entries())
+      .map(([week, data]) => {
+        const avgPriceA =
+          data.A.tonnage > 0 ? data.A.revenue / data.A.tonnage : 0;
+        const avgPriceB =
+          data.B.tonnage > 0 ? data.B.revenue / data.B.tonnage : 0;
+
+        return {
+          week,
+          tonnageA: data.A.tonnage,
+          tonnageB: data.B.tonnage,
+          revenueA: data.A.revenue,
+          revenueB: data.B.revenue,
+          avgPriceA,
+          avgPriceB,
         };
       })
       .sort((a, b) => a.week.localeCompare(b.week));
@@ -338,9 +548,11 @@ export default function EnhancedComparativeAnalysis() {
     setError(null);
     try {
       const customerFilter = Array.from(selectedCustomers);
-      const [linesA, linesB] = await Promise.all([
+      const [linesA, linesB, productionLogsA, productionLogsB] = await Promise.all([
         fetchLines(startA, endA, customerFilter),
         fetchLines(startB, endB, customerFilter),
+        fetchProductionLogs(startA, endA, customerFilter),
+        fetchProductionLogs(startB, endB, customerFilter),
       ]);
 
       const kpiA = computeKPIs(linesA);
@@ -348,10 +560,19 @@ export default function EnhancedComparativeAnalysis() {
       setDataA(kpiA);
       setDataB(kpiB);
       setVarianceRows(computeVarianceTable(linesA, linesB));
-      setWeeklyData(aggregateWeekly(linesA, linesB));
+      setFinancialWeeklyData(aggregateWeekly(linesA, linesB));
       setAllLinesA(linesA);
       setAllLinesB(linesB);
-      setInsights(generateInsights(kpiA, kpiB, labelA, labelB));
+      setFinancialInsights(generateFinancialInsights(kpiA, kpiB, labelA, labelB));
+
+      const productionA = computeProductionKPIs(productionLogsA);
+      const productionB = computeProductionKPIs(productionLogsB);
+      setProductionDataA(productionA);
+      setProductionDataB(productionB);
+      setProductionWeeklyData(aggregateProductionWeekly(productionLogsA, productionLogsB));
+      setProductionInsights(
+        generateProductionInsights(productionA, productionB, labelA, labelB),
+      );
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -452,6 +673,9 @@ export default function EnhancedComparativeAnalysis() {
     return null;
   };
 
+  const activeInsights =
+    activeTab === 'financial' ? financialInsights : productionInsights;
+
   return (
     <div className="p-6 space-y-8 bg-gray-50 min-h-screen">
       {/* Header */}
@@ -504,7 +728,8 @@ export default function EnhancedComparativeAnalysis() {
           
           <button
             onClick={handleExport}
-            className="inline-flex items-center px-6 py-3 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 h-11"
+            disabled={activeTab === 'production'}
+            className="inline-flex items-center px-6 py-3 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 h-11 disabled:opacity-50"
           >
             <Download className="w-4 h-4 mr-2" />
             Export
@@ -516,17 +741,36 @@ export default function EnhancedComparativeAnalysis() {
             <p className="text-red-600 text-sm">{error}</p>
           </div>
         )}
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          {[
+            { key: 'financial' as const, label: 'Financial Performance' },
+            { key: 'production' as const, label: 'Production' },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`px-4 py-2 rounded-full text-sm font-medium border transition-colors ${
+                activeTab === tab.key
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400 hover:text-blue-600'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* AI Insights */}
-      {insights.length > 0 && (
+      {activeInsights.length > 0 && (
         <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl p-6 border border-blue-100">
           <div className="flex items-center gap-2 mb-4">
             <Sparkles className="w-6 h-6 text-blue-600" />
             <h2 className="text-xl font-semibold text-gray-900">AI Analysis</h2>
           </div>
           <div className="grid gap-4 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3">
-            {insights.map((insight, idx) => (
+            {activeInsights.map((insight, idx) => (
               <div key={idx} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
                 <div className="flex items-start gap-3">
                   {getInsightIcon(insight.type)}
@@ -549,7 +793,7 @@ export default function EnhancedComparativeAnalysis() {
       )}
 
       {/* KPI Comparison Cards */}
-      {dataA && dataB && (
+      {activeTab === 'financial' && dataA && dataB && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
           {[
             { key: 'revenue', label: 'Revenue', valueA: dataA.revenue, valueB: dataB.revenue },
@@ -610,18 +854,100 @@ export default function EnhancedComparativeAnalysis() {
         </div>
       )}
 
+      {activeTab === 'production' && productionDataA && productionDataB && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {[
+            {
+              key: 'tonnage',
+              label: 'Total Tonnage',
+              valueA: productionDataA.totalTonnage,
+              valueB: productionDataB.totalTonnage,
+              format: (value: number) =>
+                `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} tons`,
+            },
+            {
+              key: 'revenue',
+              label: 'Total Production Revenue',
+              valueA: productionDataA.totalRevenue,
+              valueB: productionDataB.totalRevenue,
+              format: (value: number) => formatCurrency(value),
+            },
+            {
+              key: 'avgPrice',
+              label: 'Average Price / Ton',
+              valueA: productionDataA.avgPricePerTon,
+              valueB: productionDataB.avgPricePerTon,
+              format: (value: number) => formatCurrency(value),
+            },
+            {
+              key: 'logs',
+              label: 'Production Logs',
+              valueA: productionDataA.totalLogs,
+              valueB: productionDataB.totalLogs,
+              format: (value: number) => `${Math.round(value).toLocaleString()}`,
+            },
+          ].map((metric) => {
+            const change = metric.valueA - metric.valueB;
+            const changePercent =
+              metric.valueB !== 0 ? (change / Math.abs(metric.valueB)) * 100 : 0;
+            const varianceSign = change > 0 ? '+' : change < 0 ? '-' : '';
+
+            return (
+              <div key={metric.key} className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-medium text-gray-600">{metric.label}</h3>
+                  <div className={`flex items-center gap-1 ${getChangeColor(change)}`}>
+                    {getChangeIcon(change)}
+                    <span className="text-xs font-medium">
+                      {formatPercentage(changePercent)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">{labelA}</p>
+                    <p className="text-xl font-bold text-gray-900">
+                      {metric.format(metric.valueA)}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">{labelB}</p>
+                    <p className="text-sm text-gray-600">
+                      {metric.format(metric.valueB)}
+                    </p>
+                  </div>
+
+                  <div className="pt-2 border-t border-gray-100">
+                    <p className="text-xs text-gray-500 mb-1">Variance</p>
+                    <p className={`text-sm font-medium ${getChangeColor(change)}`}>
+                      {metric.key === 'tonnage'
+                        ? `${varianceSign}${Math.abs(change).toLocaleString(undefined, { maximumFractionDigits: 1 })} tons`
+                        : metric.key === 'logs'
+                          ? `${varianceSign}${Math.abs(Math.round(change)).toLocaleString()}`
+                          : `${varianceSign}${formatCurrency(Math.abs(change))}`}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Weekly Trend Chart */}
-      {weeklyData.length > 0 && (
+      {activeTab === 'financial' && financialWeeklyData.length > 0 && (
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
           <h2 className="text-xl font-semibold text-gray-900 mb-6">Weekly Performance Trends</h2>
-          
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             {/* Revenue Trend */}
             <div>
               <h3 className="text-lg font-medium text-gray-700 mb-4">Revenue Comparison</h3>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={weeklyData} margin={{ left: 20, right: 20, top: 20, bottom: 20 }}>
+                  <LineChart data={financialWeeklyData} margin={{ left: 20, right: 20, top: 20, bottom: 20 }}>
                     <XAxis
                       dataKey="week"
                       tickFormatter={(value) =>
@@ -676,7 +1002,7 @@ export default function EnhancedComparativeAnalysis() {
               <h3 className="text-lg font-medium text-gray-700 mb-4">Net Income Comparison</h3>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={weeklyData} margin={{ left: 20, right: 20, top: 20, bottom: 20 }}>
+                  <LineChart data={financialWeeklyData} margin={{ left: 20, right: 20, top: 20, bottom: 20 }}>
                     <XAxis
                       dataKey="week"
                       tickFormatter={(value) =>
@@ -729,10 +1055,128 @@ export default function EnhancedComparativeAnalysis() {
         </div>
       )}
 
+      {activeTab === 'production' && productionWeeklyData.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <h2 className="text-xl font-semibold text-gray-900 mb-6">Production Trends</h2>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div>
+              <h3 className="text-lg font-medium text-gray-700 mb-4">Tonnage Comparison</h3>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={productionWeeklyData} margin={{ left: 20, right: 20, top: 20, bottom: 20 }}>
+                    <XAxis
+                      dataKey="week"
+                      tickFormatter={(value) =>
+                        parse(value as string, "yyyy-MM-dd", new Date()).toLocaleDateString(
+                          "en-US",
+                          { month: "short", day: "numeric" },
+                        )
+                      }
+                      stroke="#6B7280"
+                      fontSize={12}
+                    />
+                    <YAxis
+                      tickFormatter={(v) => `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })}`}
+                      stroke="#6B7280"
+                      fontSize={12}
+                      label={{ value: 'Tons', angle: -90, position: 'insideLeft', offset: -5, fill: '#6B7280' }}
+                    />
+                    <Tooltip
+                      formatter={(value) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} tons`}
+                      labelFormatter={(value) =>
+                        `Week of ${parse(value as string, "yyyy-MM-dd", new Date()).toLocaleDateString()}`
+                      }
+                      contentStyle={{
+                        backgroundColor: "white",
+                        border: "1px solid #E5E7EB",
+                        borderRadius: "8px",
+                      }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="tonnageA"
+                      stroke={BRAND_COLORS.primary}
+                      strokeWidth={3}
+                      dot={{ fill: BRAND_COLORS.primary, strokeWidth: 2, r: 4 }}
+                      name={labelA}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="tonnageB"
+                      stroke={BRAND_COLORS.gray[600]}
+                      strokeWidth={2}
+                      strokeDasharray="5 5"
+                      dot={{ fill: BRAND_COLORS.gray[600], strokeWidth: 2, r: 3 }}
+                      name={labelB}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-lg font-medium text-gray-700 mb-4">Production Revenue Comparison</h3>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={productionWeeklyData} margin={{ left: 20, right: 20, top: 20, bottom: 20 }}>
+                    <XAxis
+                      dataKey="week"
+                      tickFormatter={(value) =>
+                        parse(value as string, "yyyy-MM-dd", new Date()).toLocaleDateString(
+                          "en-US",
+                          { month: "short", day: "numeric" },
+                        )
+                      }
+                      stroke="#6B7280"
+                      fontSize={12}
+                    />
+                    <YAxis
+                      tickFormatter={(v) => formatCurrency(Number(v))}
+                      stroke="#6B7280"
+                      fontSize={12}
+                    />
+                    <Tooltip
+                      formatter={(value) => formatCurrency(Number(value))}
+                      labelFormatter={(value) =>
+                        `Week of ${parse(value as string, "yyyy-MM-dd", new Date()).toLocaleDateString()}`
+                      }
+                      contentStyle={{
+                        backgroundColor: "white",
+                        border: "1px solid #E5E7EB",
+                        borderRadius: "8px",
+                      }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="revenueA"
+                      stroke={BRAND_COLORS.success}
+                      strokeWidth={3}
+                      dot={{ fill: BRAND_COLORS.success, strokeWidth: 2, r: 4 }}
+                      name={labelA}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="revenueB"
+                      stroke={BRAND_COLORS.gray[600]}
+                      strokeWidth={2}
+                      strokeDasharray="5 5"
+                      dot={{ fill: BRAND_COLORS.gray[600], strokeWidth: 2, r: 3 }}
+                      name={labelB}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Detailed Variance Table */}
-      {(varianceRows.income.length > 0 ||
-        varianceRows.cogs.length > 0 ||
-        varianceRows.expenses.length > 0) && (
+      {activeTab === 'financial' &&
+        (varianceRows.income.length > 0 ||
+          varianceRows.cogs.length > 0 ||
+          varianceRows.expenses.length > 0) && (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="p-6 border-b border-gray-100">
             <h2 className="text-xl font-semibold text-gray-900">Account-Level Analysis</h2>
@@ -1005,7 +1449,7 @@ export default function EnhancedComparativeAnalysis() {
       )}
 
       {/* Transaction Details Modal */}
-      {showModal && (
+      {activeTab === 'financial' && showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl max-w-5xl w-full max-h-[80vh] flex flex-col shadow-2xl">
             <div className="p-6 border-b border-gray-200 flex justify-between items-center">
